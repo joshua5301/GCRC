@@ -1,6 +1,7 @@
 import numpy as np
+import scipy.sparse as sp
 import torch
-from sklearn.cluster import KMeans, kmeans_plusplus
+from sklearn.cluster import AgglomerativeClustering, BisectingKMeans, KMeans, kmeans_plusplus
 
 
 def rms_normalize(x):
@@ -55,10 +56,21 @@ def initial_centers(z, cluster_num, init, seed):
     return init
 
 
-def partition(H, y_pred, cluster_num, lam, init='k-means++', seed=0):
+def cluster_labels(z, cluster_num, cluster, init, seed, edge_index):
+    if cluster == 'ward':
+        return AgglomerativeClustering(cluster_num, linkage='ward').fit_predict(z)
+    if cluster == 'ward-graph':
+        edge = edge_index.cpu().numpy()
+        connectivity = sp.coo_matrix((np.ones(edge.shape[1]), (edge[0], edge[1])), shape=(len(z), len(z)))
+        return AgglomerativeClustering(cluster_num, linkage='ward', connectivity=connectivity).fit_predict(z)
+    if cluster == 'bisecting':
+        return BisectingKMeans(cluster_num, random_state=seed).fit_predict(z)
+    return KMeans(cluster_num, init=initial_centers(z, cluster_num, init, seed), n_init=1, random_state=seed).fit_predict(z)
+
+
+def partition(H, y_pred, cluster_num, lam, cluster='kmeans', init='k-means++', seed=0, edge_index=None):
     H, y_pred = H.double(), y_pred.double()
     x = rms_normalize(H / H.norm(dim=1, keepdim=True).clamp(min=1e-12))
     z = torch.cat([x, lam ** 0.5 * (y_pred - y_pred.mean(0))], 1).cpu().numpy()
-    kmeans = KMeans(cluster_num, init=initial_centers(z, cluster_num, init, seed), n_init=1, random_state=seed).fit(z)
-    assign = torch.from_numpy(kmeans.labels_).long().to(H.device)
+    assign = torch.from_numpy(cluster_labels(z, cluster_num, cluster, init, seed, edge_index)).long().to(H.device)
     return cell_means(H, assign, cluster_num), cell_means(y_pred, assign, cluster_num)
