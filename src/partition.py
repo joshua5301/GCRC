@@ -1,7 +1,6 @@
 import numpy as np
 import torch
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans, kmeans_plusplus
 
 
 def rms_normalize(x):
@@ -36,11 +35,23 @@ def var_part(z, cluster_num):
     return np.stack([z[ids].mean(0) for ids in groups])
 
 
-def initial_centers(z, cluster_num, init):
-    if init == 'pca':
-        return PCA(n_components=cluster_num).fit(z).components_
+def maximin(z, cluster_num):
+    sq_norm = (z ** 2).sum(1)
+    index = [int(((z - z.mean(0)) ** 2).sum(1).argmin())]
+    min_dist = sq_norm - 2 * z @ z[index[0]] + sq_norm[index[0]]
+    for _ in range(cluster_num - 1):
+        index.append(int(min_dist.argmax()))
+        min_dist = np.minimum(min_dist, sq_norm - 2 * z @ z[index[-1]] + sq_norm[index[-1]])
+    return z[index]
+
+
+def initial_centers(z, cluster_num, init, seed):
     if init == 'var-part':
         return var_part(z, cluster_num)
+    if init == 'maximin':
+        return maximin(z, cluster_num)
+    if init == 'k-means++-ng':
+        return kmeans_plusplus(z, cluster_num, random_state=seed, n_local_trials=1)[0]
     return init
 
 
@@ -48,6 +59,6 @@ def partition(H, y_pred, cluster_num, lam, init='k-means++', seed=0):
     H, y_pred = H.double(), y_pred.double()
     x = rms_normalize(H / H.norm(dim=1, keepdim=True).clamp(min=1e-12))
     z = torch.cat([x, lam ** 0.5 * (y_pred - y_pred.mean(0))], 1).cpu().numpy()
-    kmeans = KMeans(cluster_num, init=initial_centers(z, cluster_num, init), n_init=1, random_state=seed).fit(z)
+    kmeans = KMeans(cluster_num, init=initial_centers(z, cluster_num, init, seed), n_init=1, random_state=seed).fit(z)
     assign = torch.from_numpy(kmeans.labels_).long().to(H.device)
     return cell_means(H, assign, cluster_num), cell_means(y_pred, assign, cluster_num)
