@@ -12,7 +12,7 @@ seed_everything(args.seed)
 
 args = override_to_best_hyperparams(args)
 print(f'{args.dataset_name} r={args.ratio:g}: teacher dropout={args.teacher_dropout:g} criterion={args.teacher_criterion} '
-      f'T={args.T:g} lam={args.lam:g} cluster={args.cluster} init={args.init} | student lr={args.lr:g} wd={args.weight_decay:g} dropouts={args.dropouts}')
+      f'T={args.T:g} lam={args.lam:g} init={args.init} n_init={args.n_init} | student lr={args.lr:g} wd={args.weight_decay:g} dropouts={args.dropouts}')
 
 ## data
 datasets = get_dataset(args)
@@ -27,7 +27,7 @@ X = H2
 y_pred = get_teacher_labels(args, data, data_val)
 if data_val is None:
     print(f'teacher test acc: {100 * (y_pred.argmax(1)[data.test_mask] == data.y[data.test_mask]).double().mean():.2f}%')
-X_cond, y_cond = partition(X, y_pred, budget_node_num, args.lam, args.cluster, args.init, args.seed, data.edge_index)
+X_cond, y_cond = partition(X, y_pred, budget_node_num, args.lam, args.init, args.n_init, args.seed)
 X_cond, y_cond = X_cond.float(), y_cond.float()
 all_node_num = len(X_cond)
 graph = Data(x=X_cond, y=y_cond, edge_index=torch.eye(all_node_num).nonzero().t().to(X_cond.device),
