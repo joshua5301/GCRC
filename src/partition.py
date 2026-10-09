@@ -50,9 +50,13 @@ def lloyd(z, assign, cluster_num, max_iter=300):
     return assign
 
 
+def joint_features(H, y_pred, lam):
+    x = rms_normalize(H / H.norm(dim=1, keepdim=True).clamp(min=1e-12))
+    return torch.cat([x, lam ** 0.5 * (y_pred - y_pred.mean(0))], 1)
+
+
 def partition(H, y_pred, cluster_num, lam):
     H, y_pred = H.double(), y_pred.double()
-    x = rms_normalize(H / H.norm(dim=1, keepdim=True).clamp(min=1e-12))
-    z = torch.cat([x, lam ** 0.5 * (y_pred - y_pred.mean(0))], 1)
+    z = joint_features(H, y_pred, lam)
     assign = lloyd(z, var_part(z, cluster_num), cluster_num)
-    return cell_means(H, assign, cluster_num), cell_means(y_pred, assign, cluster_num)
+    return cell_means(H, assign, cluster_num), cell_means(y_pred, assign, cluster_num), assign

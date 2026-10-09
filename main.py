@@ -5,6 +5,7 @@ from src.module import *
 from src.dataloader import *
 from src.teacher import get_teacher_labels
 from src.partition import partition
+from src.bilevel import bilevel
 
 args = get_hyperparams()
 args = device_setting(args)
@@ -23,17 +24,25 @@ begin = time.time()
 budget_node_num = budget(args)
 H0, H1, H2 = conv_graph_multi(args, data)
 X = H2
+t_prop = time.time()
 
 y_pred = get_teacher_labels(args, data, data_val)
+t_teacher = time.time()
 if data_val is None:
     print(f'teacher test acc: {100 * (y_pred.argmax(1)[data.test_mask] == data.y[data.test_mask]).double().mean():.2f}%')
-X_cond, y_cond = partition(X, y_pred, budget_node_num, args.lam)
+X_cond, y_cond, assign = partition(X, y_pred, budget_node_num, args.lam)
+t_stage1 = time.time()
+if args.stage2_steps is not None:
+    X_cond, y_cond, _ = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
+                                args.stage2_steps, args.stage2_lr)
 X_cond, y_cond = X_cond.float(), y_cond.float()
 all_node_num = len(X_cond)
 graph = Data(x=X_cond, y=y_cond, edge_index=torch.eye(all_node_num).nonzero().t().to(X_cond.device),
              edge_attr=torch.ones(all_node_num, device=X_cond.device), train_mask=torch.ones(all_node_num, dtype=torch.bool, device=X_cond.device))
 args.cond_time = time.time() - begin
 print(f'condensed: {all_node_num} nodes (budget {budget_node_num})  time {args.cond_time:.2f} s')
+print(f'time: propagation {t_prop - begin:.2f} s, teacher {t_teacher - t_prop:.2f} s, stage 1 {t_stage1 - t_teacher:.2f} s, '
+      f'stage 2 {time.time() - t_stage1:.2f} s')
 
 ## student
 graph = graph.to(args.device)

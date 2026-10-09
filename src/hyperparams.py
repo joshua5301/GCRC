@@ -18,6 +18,11 @@ def get_hyperparams():
     parser.add_argument('--teacher_criterion', type=str, default='acc', help='teacher early stopping by val acc or ce')
     parser.add_argument('--T', type=float, default=None, help='teacher softmax temperature')
     parser.add_argument('--lam', type=float, default=None, help='weight of label variance in joint clustering')
+    parser.add_argument('--stage2_steps', type=int, default=None, help='bilevel stage 2 Adam steps (unset = stage 1 only, 0 = soft initial assignment)')
+    parser.add_argument('--rank', type=int, default=16, help='rank of the stage 2 soft assignment U V^T')
+    parser.add_argument('--tau', type=float, default=0.03, help='softmax temperature of the stage 2 assignment')
+    parser.add_argument('--penalty', type=float, default=1e-5, help='ridge penalty of the stage 2 inner linear head')
+    parser.add_argument('--stage2_lr', type=float, default=0.01, help='Adam learning rate of stage 2')
 
     args = parser.parse_args()
     return args
