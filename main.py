@@ -26,7 +26,7 @@ H0, H1, H2 = conv_graph_multi(args, data)
 X = H2
 t_prop = time.time()
 
-y_pred = get_teacher_labels(args, data, data_val)
+y_pred = get_teacher_labels(args, data, data_val, data_test)
 t_teacher = time.time()
 if data_val is None:
     print(f'teacher test acc: {100 * (y_pred.argmax(1)[data.test_mask] == data.y[data.test_mask]).double().mean():.2f}%')

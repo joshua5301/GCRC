@@ -15,6 +15,7 @@ def get_hyperparams():
     parser.add_argument('--weight_decay', type=float, default=5e-4)
     parser.add_argument('--dropouts', type=str, default=None, help='comma-separated dropout values')
     parser.add_argument('--teacher_dropout', type=float, default=None, help='dropout of the 2-layer GCN teacher')
+    parser.add_argument('--teacher_dir', type=str, default=None, help='folder of saved teachers: load if present, else train and save')
     parser.add_argument('--teacher_criterion', type=str, default='acc', help='teacher early stopping by val acc or ce')
     parser.add_argument('--T', type=float, default=None, help='teacher softmax temperature')
     parser.add_argument('--lam', type=float, default=None, help='weight of label variance in joint clustering')
