@@ -32,17 +32,7 @@ if data_val is None:
     print(f'teacher test acc: {100 * (y_pred.argmax(1)[data.test_mask] == data.y[data.test_mask]).double().mean():.2f}%')
 X_cond, y_cond, assign = partition(X, y_pred, budget_node_num, args.lam)
 t_stage1 = time.time()
-checkpoints = []
-if args.stage2_steps is not None:
-    X_cond, y_cond, checkpoints = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
-                                          args.stage2_steps, args.stage2_lr, args.stage2_solver, args.inner_steps, args.inner_lr,
-                                          args.hinv_steps, args.hinv_lr, args.checkpoint_every)
-args.cond_time = time.time() - begin
-print(f'condensed: {len(X_cond)} nodes (budget {budget_node_num})  time {args.cond_time:.2f} s')
-print(f'time: propagation {t_prop - begin:.2f} s, teacher {t_teacher - t_prop:.2f} s, stage 1 {t_stage1 - t_teacher:.2f} s, '
-      f'stage 2 {time.time() - t_stage1:.2f} s')
 
-## student
 def evaluate(X_cond, y_cond, repeat, verbose=True):
     X_cond, y_cond, n = X_cond.float(), y_cond.float(), len(X_cond)
     graph = Data(x=X_cond, y=y_cond, edge_index=torch.eye(n).nonzero().t().to(X_cond.device),
@@ -59,16 +49,29 @@ def evaluate(X_cond, y_cond, repeat, verbose=True):
             print(f'-- dropout {dropout:g}: val {100 * val:.2f}  test {100 * np.mean(test):.2f} +- {100 * results[dropout][2]:.2f}')
     return results
 
-if checkpoints:
-    # student val search over the stage 2 checkpoints (test recorded too, selection by val only)
-    search = []
-    for step, X_step, y_step in checkpoints:
-        results = evaluate(X_step, y_step, args.search_repeat, verbose=False)
-        dropout = max(results, key=lambda d: results[d][0])
-        search.append((results[dropout][0], step, X_step, y_step))
-        print(f'checkpoint step {step}: val {100 * results[dropout][0]:.2f}  test {100 * results[dropout][1]:.2f}  (dropout {dropout:g})')
+search = []
+def on_checkpoint(step, X_step, y_step):
+    # student val search over the stage 2 checkpoints (test recorded too, selection by val only); True = stop early
+    results = evaluate(X_step, y_step, args.search_repeat, verbose=False)
+    dropout = max(results, key=lambda d: results[d][0])
+    search.append((results[dropout][0], step, X_step, y_step))
+    print(f'checkpoint step {step}: val {100 * results[dropout][0]:.2f}  test {100 * results[dropout][1]:.2f}  (dropout {dropout:g})', flush=True)
+    best = max(range(len(search)), key=lambda i: search[i][0])
+    return args.patience is not None and len(search) - 1 - best >= args.patience
+
+if args.stage2_steps is not None:
+    X_cond, y_cond = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
+                             args.stage2_steps, args.stage2_lr, args.stage2_solver, args.inner_steps, args.inner_lr,
+                             args.hinv_steps, args.hinv_lr, args.checkpoint_every, on_checkpoint if args.checkpoint_every else None)
+if search:
     _, step, X_cond, y_cond = max(search, key=lambda c: c[0])
     print(f'checkpoint selected by val: step {step}')
+args.cond_time = time.time() - begin
+print(f'condensed: {len(X_cond)} nodes (budget {budget_node_num})  time {args.cond_time:.2f} s')
+print(f'time: propagation {t_prop - begin:.2f} s, teacher {t_teacher - t_prop:.2f} s, stage 1 {t_stage1 - t_teacher:.2f} s, '
+      f'stage 2 {time.time() - t_stage1:.2f} s' + (' (incl. checkpoint student search)' if search else ''))
+
+## student
 results = evaluate(X_cond, y_cond, args.repeat)
 best = max(results, key=lambda d: results[d][0])
 print(f'== {args.dataset_name} r={args.ratio:g}: {100 * results[best][1]:.2f} +- {100 * results[best][2]:.2f}  (dropout {best:g}, val {100 * results[best][0]:.2f})')

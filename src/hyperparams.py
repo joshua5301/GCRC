@@ -31,6 +31,7 @@ def get_hyperparams():
     parser.add_argument('--hinv_lr', type=float, default=0.1, help='adam solver: learning rate for H^-1 g')
     parser.add_argument('--checkpoint_every', type=int, default=None, help='stage 2: pick the checkpoint (every n steps) with the best student val instead of the lowest outer CE')
     parser.add_argument('--search_repeat', type=int, default=3, help='student runs per stage 2 checkpoint in the val search')
+    parser.add_argument('--patience', type=int, default=None, help='stage 2: stop after this many checkpoints without a better student val')
 
     args = parser.parse_args()
     return args
