@@ -30,7 +30,7 @@ y_pred = get_teacher_labels(args, data, data_val, data_test)
 t_teacher = time.time()
 if data_val is None:
     print(f'teacher test acc: {100 * (y_pred.argmax(1)[data.test_mask] == data.y[data.test_mask]).double().mean():.2f}%')
-X_cond, y_cond, assign = partition(X, y_pred, budget_node_num, args.lam)
+X_cond, y_cond, assign = partition(X, y_pred, budget_node_num, args.lam, args.feature_norm)
 t_stage1 = time.time()
 
 def evaluate(X_cond, y_cond, repeat, verbose=True):
@@ -61,7 +61,7 @@ def on_checkpoint(step, X_step, y_step):
 
 if args.stage2_steps is not None:
     X_cond, y_cond = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
-                             args.stage2_steps, args.stage2_lr, args.checkpoint_every, on_checkpoint if args.checkpoint_every else None)
+                             args.stage2_steps, args.stage2_lr, args.checkpoint_every, on_checkpoint if args.checkpoint_every else None, args.feature_norm)
 if search:
     _, step, X_cond, y_cond = max(search, key=lambda c: c[0])
     print(f'checkpoint selected by val: step {step}')

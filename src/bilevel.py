@@ -42,7 +42,7 @@ def minimize(value_and_grad, x, tol=1e-5, max_iter=1000):
 
 
 def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5, steps=500, lr=0.01,
-            checkpoint_every=None, callback=None, log_every=50):
+            checkpoint_every=None, callback=None, feature_norm='row', log_every=50):
     """Stage 2: soft assignment P = softmax(U V^T / (tau sqrt(rank))), initialized from the stage-1 partition, trained so that a linear
     head fitted on the condensed nodes minimizes the teacher CE on all original nodes (implicit differentiation).
     The inner head and H^{-1} g (as the minimizer of 1/2 s^T H s - g^T s) are both solved to convergence by L-BFGS, warm-started.
@@ -51,7 +51,7 @@ def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5
     H, q = H.double(), y_pred.double()
     offset, scale = H.mean(0), (H - H.mean(0)).square().sum(1).mean().sqrt()
     z = (H - offset) / scale                        # feature space of the linear head
-    inputs = joint_features(H, q, lam)              # stage-1 clustering space
+    inputs = joint_features(H, q, lam, feature_norm)  # stage-1 clustering space
     u, v = svd_factors(inputs, cell_means(inputs, assign, cluster_num), rank)
     u, v = u.requires_grad_(), v.requires_grad_()
     optimizer = torch.optim.Adam([u, v], lr=lr, eps=1e-12)

@@ -50,13 +50,23 @@ def lloyd(z, assign, cluster_num, max_iter=300):
     return assign
 
 
-def joint_features(H, y_pred, lam):
-    x = rms_normalize(H / H.norm(dim=1, keepdim=True).clamp(min=1e-12))
-    return torch.cat([x, lam ** 0.5 * (y_pred - y_pred.mean(0))], 1)
+def normalize_features(H, norm='row'):
+    # row: unit-L2 rows (direction only), col: per-dimension z-score, rms: raw; all then centered and scaled to unit RMS norm
+    if norm == 'row':
+        H = H / H.norm(dim=1, keepdim=True).clamp(min=1e-12)
+    elif norm == 'col':
+        H = (H - H.mean(0)) / H.std(0).clamp(min=1e-12)
+    elif norm != 'rms':
+        raise ValueError(f'unknown feature norm {norm}')
+    return rms_normalize(H)
 
 
-def partition(H, y_pred, cluster_num, lam):
+def joint_features(H, y_pred, lam, norm='row'):
+    return torch.cat([normalize_features(H, norm), lam ** 0.5 * (y_pred - y_pred.mean(0))], 1)
+
+
+def partition(H, y_pred, cluster_num, lam, norm='row'):
     H, y_pred = H.double(), y_pred.double()
-    z = joint_features(H, y_pred, lam)
+    z = joint_features(H, y_pred, lam, norm)
     assign = lloyd(z, var_part(z, cluster_num), cluster_num)
     return cell_means(H, assign, cluster_num), cell_means(y_pred, assign, cluster_num), assign

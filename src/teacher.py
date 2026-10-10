@@ -53,8 +53,8 @@ def get_teacher_labels(args, data, data_val=None, data_test=None):
         teacher = train_teacher(args, data, data_val, data_test)
         if path:
             os.makedirs(args.teacher_dir, exist_ok=True)
-            torch.save({k: v.cpu() if torch.is_tensor(v) else v for k, v in teacher.items()}, path + '.tmp')
-            os.replace(path + '.tmp', path)
+            torch.save({k: v.cpu() if torch.is_tensor(v) else v for k, v in teacher.items()}, f'{path}.{os.getpid()}.tmp')
+            os.replace(f'{path}.{os.getpid()}.tmp', path)
     print(f'teacher dropout {args.teacher_dropout:g}: val {100 * teacher["val_score"]:.2f}  test {100 * teacher["test_acc"]:.2f}'
           + ('  (loaded)' if loaded else ''))
     return F.softmax(teacher['log_prob'].to(args.device) / args.T, dim=1)
