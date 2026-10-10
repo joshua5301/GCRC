@@ -1,5 +1,5 @@
 import torch
-from torch.func import grad, jvp
+from torch.func import grad, grad_and_value, jvp
 
 from src.partition import cell_means, joint_features
 
@@ -29,56 +29,23 @@ def inner_loss(theta, x, labels, penalty):
     return ce(theta, x, labels) + penalty * theta.square().sum() / 2
 
 
-@torch.no_grad()
-def cg(matvec, b, x=None, rtol=1e-3, max_iter=2048):
-    x = torch.zeros_like(b) if x is None else x.clone()
-    r = b - matvec(x)
-    p, rr = r.clone(), (r * r).sum()
-    for _ in range(max_iter):
-        if rr.sqrt() <= rtol * b.norm():
-            break
-        Ap = matvec(p)
-        alpha = rr / (p * Ap).sum()
-        x, r = x + alpha * p, r - alpha * Ap
-        rr, rr_old = (r * r).sum(), rr
-        p = r + rr / rr_old * p
-    return x
-
-
-def fit_head(theta, x, labels, penalty, tol=1e-5, max_steps=50):
-    # warm-started Newton-CG with Armijo backtracking
-    gradient = grad(inner_loss)
-    for _ in range(max_steps):
-        g = gradient(theta, x, labels, penalty)
-        if g.abs().max() <= tol:
-            break
-        hvp = lambda v: jvp(lambda t: gradient(t, x, labels, penalty), (theta,), (v,))[1]
-        direction = cg(hvp, g, rtol=min(0.1, max(1e-4, float(g.abs().max()) ** 0.5)), max_iter=512)
-        loss, decrease = inner_loss(theta, x, labels, penalty), (g * direction).sum()
-        step = 1.0
-        while inner_loss(theta - step * direction, x, labels, penalty) > loss - 1e-4 * step * decrease and step > 1e-7:
-            step /= 2
-        theta = theta - step * direction
-    return theta.detach(), float(g.abs().max())
-
-
-def adam(grad_fn, x, steps, lr):
-    # a fixed number of Adam steps from x (RCIG-style approximate solve; fresh moment estimates each call)
+def minimize(value_and_grad, x, tol=1e-5, max_iter=1000):
+    # torch L-BFGS (strong Wolfe line search) from x until the max-abs gradient is <= tol
     x = x.detach().clone().requires_grad_()
-    optimizer = torch.optim.Adam([x], lr=lr)
-    for _ in range(steps):
-        x.grad = grad_fn(x.detach())
-        optimizer.step()
+    optimizer = torch.optim.LBFGS([x], lr=1, max_iter=max_iter, tolerance_grad=tol, tolerance_change=1e-14,
+                                  history_size=20, line_search_fn='strong_wolfe')
+    def closure():
+        value, x.grad = value_and_grad(x.detach())
+        return value
+    optimizer.step(closure)
     return x.detach()
 
 
-def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5, steps=500, lr=0.01, solver='exact',
-            inner_steps=20, inner_lr=0.01, hinv_steps=20, hinv_lr=0.1, checkpoint_every=None, callback=None, log_every=50):
+def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5, steps=500, lr=0.01,
+            checkpoint_every=None, callback=None, log_every=50):
     """Stage 2: soft assignment P = softmax(U V^T / (tau sqrt(rank))), initialized from the stage-1 partition, trained so that a linear
     head fitted on the condensed nodes minimizes the teacher CE on all original nodes (implicit differentiation).
-    solver='exact': inner head by Newton-CG to convergence, H^{-1} g by CG (warm-started).
-    solver='adam': RCIG-style, inner_steps Adam steps warm-started from the previous head, H^{-1} g by hinv_steps Adam steps
-    on 1/2 s^T H s - g^T s from zero.
+    The inner head and H^{-1} g (as the minimizer of 1/2 s^T H s - g^T s) are both solved to convergence by L-BFGS, warm-started.
     Every checkpoint_every steps (and at the last step) calls callback(step, features, labels); a True return stops early.
     Returns the condensed features (P-weighted means of raw H) and labels at the step with the lowest outer CE."""
     H, q = H.double(), y_pred.double()
@@ -88,38 +55,35 @@ def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5
     u, v = svd_factors(inputs, cell_means(inputs, assign, cluster_num), rank)
     u, v = u.requires_grad_(), v.requires_grad_()
     optimizer = torch.optim.Adam([u, v], lr=lr, eps=1e-12)
-    outer_grad = grad(ce)
+    g_inner = grad(inner_loss)
     theta, s, best = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None
     for step in range(steps + 1):
         p = (u @ v.T / (tau * rank ** 0.5)).softmax(1)
         mass = p.sum(0)[:, None]
         x, labels = p.T @ z / mass, p.T @ q / mass  # condensed nodes, differentiable in (u, v)
-        g_inner = grad(inner_loss)
-        if solver == 'exact':
-            theta, inner_grad = fit_head(theta, x.detach(), labels.detach(), penalty)
-        else:
-            theta = adam(lambda t: g_inner(t, x.detach(), labels.detach(), penalty), theta, inner_steps, inner_lr)
-            inner_grad = float(g_inner(theta, x.detach(), labels.detach(), penalty).abs().max())
+        xd, ld = x.detach(), labels.detach()
+        theta = minimize(lambda t: grad_and_value(inner_loss)(t, xd, ld, penalty)[::-1], theta)
         with torch.no_grad():
             value = float(ce(theta, z, q))
         if step == 0:
             loss_scale = value
         if best is None or value < best[0]:
-            best = (value, step, x.detach(), labels.detach())
+            best = (value, step, xd, ld)
         if step % log_every == 0 or step == steps:
-            print(f'stage2 step {step:4d}: outer CE {value:.5f}  inner grad {inner_grad:.1e}  min mass {float(mass.detach().min()) * cluster_num / len(z):.3f}')
-        if callback and (step % checkpoint_every == 0 or step == steps) and callback(step, x.detach() * scale + offset, labels.detach()):
+            print(f'stage2 step {step:4d}: outer CE {value:.5f}  inner grad {float(g_inner(theta, xd, ld, penalty).abs().max()):.1e}  '
+                  f'min mass {float(mass.detach().min()) * cluster_num / len(z):.3f}')
+        if callback and (step % checkpoint_every == 0 or step == steps) and callback(step, xd * scale + offset, ld):
             print(f'stage2 early stop at step {step}')
             break
         if step == steps:
             break
         # d outer/d(x, labels) = -d/d(x, labels) [ grad_theta inner . H^{-1} grad_theta outer ]
-        hvp = lambda w: jvp(lambda t: g_inner(t, x.detach(), labels.detach(), penalty), (theta,), (w,))[1]
-        g_outer = outer_grad(theta, z, q)
-        if solver == 'exact':
-            s = cg(hvp, g_outer, s)
-        else:
-            s = adam(lambda w: hvp(w) - g_outer, torch.zeros_like(g_outer), hinv_steps, hinv_lr)
+        hvp = lambda w: jvp(lambda t: g_inner(t, xd, ld, penalty), (theta,), (w,))[1]
+        g_outer = grad(ce)(theta, z, q)
+        def quadratic(w):
+            hw = hvp(w)
+            return (w * hw).sum() / 2 - (g_outer * w).sum(), hw - g_outer
+        s = minimize(quadratic, torch.zeros_like(g_outer) if s is None else s, tol=1e-3 * float(g_outer.abs().max()))
         optimizer.zero_grad()
         (-(g_inner(theta, x, labels, penalty) * s).sum() / loss_scale).backward()
         optimizer.step()

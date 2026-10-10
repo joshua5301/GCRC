@@ -61,8 +61,7 @@ def on_checkpoint(step, X_step, y_step):
 
 if args.stage2_steps is not None:
     X_cond, y_cond = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
-                             args.stage2_steps, args.stage2_lr, args.stage2_solver, args.inner_steps, args.inner_lr,
-                             args.hinv_steps, args.hinv_lr, args.checkpoint_every, on_checkpoint if args.checkpoint_every else None)
+                             args.stage2_steps, args.stage2_lr, args.checkpoint_every, on_checkpoint if args.checkpoint_every else None)
 if search:
     _, step, X_cond, y_cond = max(search, key=lambda c: c[0])
     print(f'checkpoint selected by val: step {step}')
