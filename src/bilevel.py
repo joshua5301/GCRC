@@ -73,13 +73,14 @@ def adam(grad_fn, x, steps, lr):
 
 
 def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5, steps=500, lr=0.01, solver='exact',
-            inner_steps=20, inner_lr=0.01, hinv_steps=20, hinv_lr=0.1, log_every=50):
+            inner_steps=20, inner_lr=0.01, hinv_steps=20, hinv_lr=0.1, checkpoint_every=None, log_every=50):
     """Stage 2: soft assignment P = softmax(U V^T / (tau sqrt(rank))), initialized from the stage-1 partition, trained so that a linear
     head fitted on the condensed nodes minimizes the teacher CE on all original nodes (implicit differentiation).
     solver='exact': inner head by Newton-CG to convergence, H^{-1} g by CG (warm-started).
     solver='adam': RCIG-style, inner_steps Adam steps warm-started from the previous head, H^{-1} g by hinv_steps Adam steps
     on 1/2 s^T H s - g^T s from zero.
-    Returns the condensed features (P-weighted means of raw H) and labels at the step with the lowest outer CE."""
+    Returns the condensed features (P-weighted means of raw H) and labels at the step with the lowest outer CE, and a list of
+    (step, features, labels) every checkpoint_every steps and at the last step (empty if checkpoint_every is None)."""
     H, q = H.double(), y_pred.double()
     offset, scale = H.mean(0), (H - H.mean(0)).square().sum(1).mean().sqrt()
     z = (H - offset) / scale                        # feature space of the linear head
@@ -88,7 +89,7 @@ def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5
     u, v = u.requires_grad_(), v.requires_grad_()
     optimizer = torch.optim.Adam([u, v], lr=lr, eps=1e-12)
     outer_grad = grad(ce)
-    theta, s, best = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None
+    theta, s, best, checkpoints = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None, []
     for step in range(steps + 1):
         p = (u @ v.T / (tau * rank ** 0.5)).softmax(1)
         mass = p.sum(0)[:, None]
@@ -105,6 +106,8 @@ def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5
             loss_scale = value
         if best is None or value < best[0]:
             best = (value, step, x.detach(), labels.detach())
+        if checkpoint_every and (step % checkpoint_every == 0 or step == steps):
+            checkpoints.append((step, x.detach() * scale + offset, labels.detach()))
         if step % log_every == 0 or step == steps:
             print(f'stage2 step {step:4d}: outer CE {value:.5f}  inner grad {inner_grad:.1e}  min mass {float(mass.detach().min()) * cluster_num / len(z):.3f}')
         if step == steps:
@@ -121,4 +124,4 @@ def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5
         optimizer.step()
     value, step, x, labels = best
     print(f'stage2 best step {step}: outer CE {value:.5f} (step 0: {loss_scale:.5f})')
-    return x * scale + offset, labels
+    return x * scale + offset, labels, checkpoints
