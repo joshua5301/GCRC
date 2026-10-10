@@ -23,6 +23,11 @@ def get_hyperparams():
     parser.add_argument('--tau', type=float, default=0.03, help='softmax temperature of the stage 2 assignment')
     parser.add_argument('--penalty', type=float, default=1e-5, help='ridge penalty of the stage 2 inner linear head')
     parser.add_argument('--stage2_lr', type=float, default=0.01, help='Adam learning rate of stage 2')
+    parser.add_argument('--stage2_solver', type=str, default='exact', help='exact (Newton-CG inner, CG for H^-1 g) or adam (RCIG-style fixed Adam steps)')
+    parser.add_argument('--inner_steps', type=int, default=20, help='adam solver: Adam steps for the inner head per outer step')
+    parser.add_argument('--inner_lr', type=float, default=0.01, help='adam solver: learning rate of the inner head')
+    parser.add_argument('--hinv_steps', type=int, default=20, help='adam solver: Adam steps for H^-1 g')
+    parser.add_argument('--hinv_lr', type=float, default=0.1, help='adam solver: learning rate for H^-1 g')
 
     args = parser.parse_args()
     return args

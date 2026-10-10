@@ -33,8 +33,9 @@ if data_val is None:
 X_cond, y_cond, assign = partition(X, y_pred, budget_node_num, args.lam)
 t_stage1 = time.time()
 if args.stage2_steps is not None:
-    X_cond, y_cond, _ = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
-                                args.stage2_steps, args.stage2_lr)
+    X_cond, y_cond = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
+                             args.stage2_steps, args.stage2_lr, args.stage2_solver, args.inner_steps, args.inner_lr,
+                             args.hinv_steps, args.hinv_lr)
 X_cond, y_cond = X_cond.float(), y_cond.float()
 all_node_num = len(X_cond)
 graph = Data(x=X_cond, y=y_cond, edge_index=torch.eye(all_node_num).nonzero().t().to(X_cond.device),
