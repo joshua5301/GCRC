@@ -7,7 +7,7 @@ from src.models import *
 def get_dataset(args):
 
     if args.dataset_name in ["cora"]:
-        dataset = Planetoid(args.raw_data_dir, 'cora')
+        dataset = Planetoid(args.raw_data_dir, 'cora', transform=T.NormalizeFeatures())
         data = dataset[0]
 
     elif args.dataset_name in ['citeseer']:
