@@ -17,6 +17,26 @@ def svd_factors(inputs, centers, rank):
     return (ql @ a[:, :rank]) * scale, (qr @ bt[:rank].T) * scale
 
 
+@torch.no_grad()
+def soft_factors(H, y_pred, assign, cluster_num, lam, rank, feature_norm='rms'):
+    """The rank-r factors of the stage-1 assignment logits plus the spaces stage 2 works in. The SVD runs in
+    the joint space [x, sqrt(lam) (q - q_bar)] (the cross term of the stage-1 objective has no embedding)."""
+    H, q = H.double(), y_pred.double()
+    offset, scale = H.mean(0), (H - H.mean(0)).square().sum(1).mean().sqrt()
+    z = (H - offset) / scale  # feature space of the inner linear head
+    inputs = joint_features(H, q, lam, feature_norm)
+    u, v = svd_factors(inputs, cell_means(inputs, assign, cluster_num), rank)
+    return u, v, z, q, offset, scale
+
+
+@torch.no_grad()
+def soft_graph(u, v, z, q, offset, scale, tau):
+    # the condensed graph of the soft assignment at temperature tau before any bilevel step (penalty-independent)
+    p = (u @ v.T / (tau * u.shape[1] ** 0.5)).softmax(1)
+    mass = p.sum(0)[:, None]
+    return (p.T @ z / mass) * scale + offset, p.T @ q / mass
+
+
 def augment(x):
     return torch.cat((x, torch.ones_like(x[:, :1])), 1)
 
@@ -42,17 +62,13 @@ def minimize(value_and_grad, x, tol=1e-5, max_iter=1000):
 
 
 def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5, steps=500, lr=0.01,
-            checkpoint_every=None, callback=None, feature_norm='row', log_every=50):
+            checkpoint_every=None, callback=None, feature_norm='rms', log_every=50):
     """Stage 2: soft assignment P = softmax(U V^T / (tau sqrt(rank))), initialized from the stage-1 partition, trained so that a linear
     head fitted on the condensed nodes minimizes the teacher CE on all original nodes (implicit differentiation).
     The inner head and H^{-1} g (as the minimizer of 1/2 s^T H s - g^T s) are both solved to convergence by L-BFGS, warm-started.
     Every checkpoint_every steps (and at the last step) calls callback(step, features, labels); a True return stops early.
     Returns the condensed features (P-weighted means of raw H) and labels at the step with the lowest outer CE."""
-    H, q = H.double(), y_pred.double()
-    offset, scale = H.mean(0), (H - H.mean(0)).square().sum(1).mean().sqrt()
-    z = (H - offset) / scale                        # feature space of the linear head
-    inputs = joint_features(H, q, lam, feature_norm)  # stage-1 clustering space
-    u, v = svd_factors(inputs, cell_means(inputs, assign, cluster_num), rank)
+    u, v, z, q, offset, scale = soft_factors(H, y_pred, assign, cluster_num, lam, rank, feature_norm)
     u, v = u.requires_grad_(), v.requires_grad_()
     optimizer = torch.optim.Adam([u, v], lr=lr, eps=1e-12)
     g_inner = grad(inner_loss)

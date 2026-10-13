@@ -5,7 +5,7 @@ from src.module import *
 from src.dataloader import *
 from src.teacher import get_teacher_labels
 from src.partition import partition
-from src.bilevel import bilevel
+from src.bilevel import bilevel, soft_factors, soft_graph
 
 args = get_hyperparams()
 args = device_setting(args)
@@ -13,7 +13,7 @@ seed_everything(args.seed)
 
 args = override_to_best_hyperparams(args)
 print(f'{args.dataset_name} r={args.ratio:g}: teacher dropout={args.teacher_dropout:g} criterion={args.teacher_criterion} '
-      f'T={args.T:g} lam={args.lam:g} | student lr={args.lr:g} wd={args.weight_decay:g} dropouts={args.dropouts}')
+      f'T={args.T:g} lam_c={args.lam_c:g} lam={args.lam:g} | student lr={args.lr:g} wd={args.weight_decay:g} dropouts={args.dropouts}')
 
 ## data
 datasets = get_dataset(args)
@@ -30,7 +30,7 @@ y_pred = get_teacher_labels(args, data, data_val, data_test)
 t_teacher = time.time()
 if data_val is None:
     print(f'teacher test acc: {100 * (y_pred.argmax(1)[data.test_mask] == data.y[data.test_mask]).double().mean():.2f}%')
-X_cond, y_cond, assign = partition(X, y_pred, budget_node_num, args.lam, args.feature_norm)
+X_cond, y_cond, assign = partition(X, y_pred, budget_node_num, args.lam_c, args.lam, args.feature_norm)
 t_stage1 = time.time()
 
 def evaluate(X_cond, y_cond, repeat, verbose=True):
@@ -60,6 +60,17 @@ def on_checkpoint(step, X_step, y_step):
     return args.patience is not None and len(search) - 1 - best >= args.patience
 
 if args.stage2_steps is not None:
+    taus = [float(t) for t in str(args.tau).split(',')]
+    if len(taus) > 1:  # pick tau by student val on the step-0 soft graph (penalty-independent), then run bilevel once
+        factors = soft_factors(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.feature_norm)
+        step0 = {}
+        for tau in taus:
+            results = evaluate(*soft_graph(*factors, tau), args.search_repeat, verbose=False)
+            step0[tau] = max(results.values(), key=lambda r: r[0])
+            print(f'tau {tau:g}: step-0 val {100 * step0[tau][0]:.2f}  test {100 * step0[tau][1]:.2f}')
+        taus = [max(taus, key=lambda t: step0[t][0])]
+        print(f'tau selected by step-0 val: {taus[0]:g}')
+    args.tau = taus[0]
     X_cond, y_cond = bilevel(X, y_pred, assign, budget_node_num, args.lam, args.rank, args.tau, args.penalty,
                              args.stage2_steps, args.stage2_lr, args.checkpoint_every, on_checkpoint if args.checkpoint_every else None, args.feature_norm)
 if search:
