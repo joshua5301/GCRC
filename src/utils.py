@@ -56,8 +56,8 @@ def normalize_adj_sparse(data):
 def model_training(model, args, data, graph, data_val=None, data_test=None):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     best_val_acc = test_acc = 0
-    for epoch in range(1, args.epoch+1):
-        if epoch == args.epoch // 2:
+    for epoch in range(1, args.student_epoch+1):
+        if epoch == args.student_epoch // 2:
             lr = args.lr*0.1
             optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=args.weight_decay)
 
@@ -69,7 +69,7 @@ def model_training(model, args, data, graph, data_val=None, data_test=None):
         loss.backward()
         optimizer.step()
 
-        if epoch % args.eval_every != 0 and epoch != args.epoch:
+        if epoch % args.eval_every != 0 and epoch != args.student_epoch:
             continue
         if args.dataset_name in ['flickr', 'reddit']:
             train_acc, val_acc, tmp_test_acc = test_inductive(args, model, data_val, data_test)
