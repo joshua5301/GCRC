@@ -1,108 +1,130 @@
+import math
+
 import torch
-from torch.func import grad, grad_and_value, jvp
 
-from src.partition import cell_means, joint_features
-
-
-@torch.no_grad()
-def svd_factors(inputs, centers, rank):
-    # rank-r factorization of the stage-1 logits -||x_i - c_j||^2 (the row constant -||x_i||^2 is dropped)
-    left = torch.cat((2 * inputs, torch.ones_like(inputs[:, :1])), 1)
-    right = torch.cat((centers, -centers.square().sum(1, keepdim=True)), 1)
-    right = right - right.mean(0)
-    ql, rl = torch.linalg.qr(left)
-    qr, rr = torch.linalg.qr(right)
-    a, s, bt = torch.linalg.svd(rl @ rr.T, full_matrices=False)
-    scale = s[:rank].sqrt() * rank ** 0.25  # logits = U V^T / sqrt(rank), as in GRIP
-    return (ql @ a[:, :rank]) * scale, (qr @ bt[:rank].T) * scale
+from src.clustering import rms_normalize
 
 
-@torch.no_grad()
-def soft_factors(H, y_pred, assign, cluster_num, lam, rank, feature_norm='rms'):
-    """The rank-r factors of the stage-1 assignment logits plus the spaces stage 2 works in. The SVD runs in
-    the joint space [x, sqrt(lam) (q - q_bar)] (the cross term of the stage-1 objective has no embedding)."""
-    H, q = H.double(), y_pred.double()
-    offset, scale = H.mean(0), (H - H.mean(0)).square().sum(1).mean().sqrt()
-    z = (H - offset) / scale  # feature space of the inner linear head
-    inputs = joint_features(H, q, lam, feature_norm)
-    u, v = svd_factors(inputs, cell_means(inputs, assign, cluster_num), rank)
-    return u, v, z, q, offset, scale
+def soft_assignment(u, v, assign, own_logit):
+    logits = u @ v.T / math.sqrt(u.shape[1])
+    logits[torch.arange(len(u), device=u.device), assign] += own_logit
+    return logits.softmax(1)
 
 
-@torch.no_grad()
-def soft_graph(u, v, z, q, offset, scale, tau):
-    # the condensed graph of the soft assignment at temperature tau before any bilevel step (penalty-independent)
-    p = (u @ v.T / (tau * u.shape[1] ** 0.5)).softmax(1)
-    mass = p.sum(0)[:, None]
-    return (p.T @ z / mass) * scale + offset, p.T @ q / mass
+class SoftMoments(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, u, v, assign, own_logit, material, chunk):
+        ctx.save_for_backward(u, v, assign, material)
+        ctx.own_logit, ctx.chunk = own_logit, chunk
+        moments = material.new_zeros(len(v), material.shape[1])
+        for start in range(0, len(u), chunk):
+            end = start + chunk
+            moments += soft_assignment(u[start:end], v, assign[start:end], own_logit).T @ material[start:end]
+        return moments / len(u)
+
+    @staticmethod
+    def backward(ctx, gradient):
+        u, v, assign, material = ctx.saved_tensors
+        du, dv = torch.empty_like(u), torch.zeros_like(v)
+        for start in range(0, len(u), ctx.chunk):
+            end = start + ctx.chunk
+            p = soft_assignment(u[start:end], v, assign[start:end], ctx.own_logit)
+            direction = material[start:end] @ gradient.T
+            block = p * (direction - (p * direction).sum(1, keepdim=True)) / (len(u) * math.sqrt(u.shape[1]))
+            du[start:end] = block @ v
+            dv += block.T @ u[start:end]
+        return du, dv, None, None, None, None
+
+
+def decode(moments, dim):
+    mass = moments[:, :1]
+    return moments[:, 1:dim + 1] / mass, moments[:, dim + 1:] / mass
 
 
 def augment(x):
-    return torch.cat((x, torch.ones_like(x[:, :1])), 1)
+    return torch.cat((x, x.new_ones(len(x), 1)), 1)
 
 
-def ce(theta, x, labels):
-    return -(labels * (augment(x) @ theta.T).log_softmax(1)).sum(1).mean()
+def head_objective(x, labels, theta, penalty):
+    return -(labels * (x @ theta.T).log_softmax(1)).sum(1).mean() + penalty * theta.square().sum() / 2
 
 
-def inner_loss(theta, x, labels, penalty):
-    return ce(theta, x, labels) + penalty * theta.square().sum() / 2
+def head_gradient(x, labels, theta, penalty):
+    return ((x @ theta.T).softmax(1) - labels).T @ x / len(x) + penalty * theta
 
 
-def minimize(value_and_grad, x, tol=1e-5, max_iter=1000):
-    # torch L-BFGS (strong Wolfe line search) from x until the max-abs gradient is <= tol
-    x = x.detach().clone().requires_grad_()
-    optimizer = torch.optim.LBFGS([x], lr=1, max_iter=max_iter, tolerance_grad=tol, tolerance_change=1e-14,
-                                  history_size=20, line_search_fn='strong_wolfe')
-    def closure():
-        value, x.grad = value_and_grad(x.detach())
-        return value
-    optimizer.step(closure)
-    return x.detach()
+def head_hessian(x, theta, penalty):
+    p = (x @ theta.T).softmax(1)
+
+    def multiply(w):
+        d = x @ w.T
+        return (p * (d - (p * d).sum(1, keepdim=True))).T @ x / len(x) + penalty * w
+
+    return multiply, (p * (1 - p)).T @ x.square() / len(x) + penalty
 
 
-def bilevel(H, y_pred, assign, cluster_num, lam, rank=16, tau=0.03, penalty=1e-5, steps=500, lr=0.01,
-            checkpoint_every=None, callback=None, feature_norm='rms', log_every=50):
-    """Stage 2: soft assignment P = softmax(U V^T / (tau sqrt(rank))), initialized from the stage-1 partition, trained so that a linear
-    head fitted on the condensed nodes minimizes the teacher CE on all original nodes (implicit differentiation).
-    The inner head and H^{-1} g (as the minimizer of 1/2 s^T H s - g^T s) are both solved to convergence by L-BFGS, warm-started.
-    Every checkpoint_every steps (and at the last step) calls callback(step, features, labels); a True return stops early.
-    Returns the condensed features (P-weighted means of raw H) and labels at the step with the lowest outer CE."""
-    u, v, z, q, offset, scale = soft_factors(H, y_pred, assign, cluster_num, lam, rank, feature_norm)
-    u, v = u.requires_grad_(), v.requires_grad_()
+def conjugate_gradient(multiply, rhs, diagonal, initial=None, rtol=1e-3, max_iter=2048):
+    x = torch.zeros_like(rhs) if initial is None else initial.clone()
+    r = rhs - multiply(x)
+    z = r / diagonal
+    p, rz, target = z, (r * z).sum(), rtol * rhs.norm()
+    for _ in range(max_iter):
+        if r.norm() <= target:
+            break
+        ap = multiply(p)
+        alpha = rz / (p * ap).sum()
+        x = x + alpha * p
+        r = r - alpha * ap
+        z = r / diagonal
+        rz, previous = (r * z).sum(), rz
+        p = z + rz / previous * p
+    return x
+
+
+def fit_head(x, labels, theta, penalty, tol=1e-5, max_iter=200):
+    for _ in range(max_iter):
+        gradient = head_gradient(x, labels, theta, penalty)
+        g_max = float(gradient.abs().max())
+        if g_max <= tol:
+            break
+        multiply, diagonal = head_hessian(x, theta, penalty)
+        direction = conjugate_gradient(multiply, gradient, diagonal, rtol=min(0.1, max(1e-4, g_max ** 0.5)))
+        objective, decrease = head_objective(x, labels, theta, penalty), (gradient * direction).sum()
+        step = 1.0
+        while head_objective(x, labels, theta - step * direction, penalty) > objective - 1e-4 * step * decrease and step > 1e-8:
+            step /= 2
+        theta = theta - step * direction
+    return theta
+
+
+def outer_loss(x, q, theta):
+    log_p = (x @ theta.T).log_softmax(1)
+    return float(-(q * log_p).sum(1).mean()), (log_p.exp() - q).T @ x / len(x)
+
+
+def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, own=0.99, seed=0, chunk=4096):
+    z, offset, scale = rms_normalize(h)
+    material, nodes = torch.cat((z.new_ones(len(z), 1), z, q), 1), augment(z)
+    own_logit = math.log(own / (1 - own) * (cells - 1))
+    generator = torch.Generator(device=z.device).manual_seed(seed)
+    u = z.new_zeros(len(z), rank).requires_grad_()
+    v = torch.randn(cells, rank, generator=generator, device=z.device, dtype=z.dtype).requires_grad_()
     optimizer = torch.optim.Adam([u, v], lr=lr, eps=1e-12)
-    g_inner = grad(inner_loss)
-    theta, s, best = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None
+    theta, vector, scale0 = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None
     for step in range(steps + 1):
-        p = (u @ v.T / (tau * rank ** 0.5)).softmax(1)
-        mass = p.sum(0)[:, None]
-        x, labels = p.T @ z / mass, p.T @ q / mass  # condensed nodes, differentiable in (u, v)
-        xd, ld = x.detach(), labels.detach()
-        theta = minimize(lambda t: grad_and_value(inner_loss)(t, xd, ld, penalty)[::-1], theta)
-        with torch.no_grad():
-            value = float(ce(theta, z, q))
-        if step == 0:
-            loss_scale = value
-        if best is None or value < best[0]:
-            best = (value, step, xd, ld)
-        if step % log_every == 0 or step == steps:
-            print(f'stage2 step {step:4d}: outer CE {value:.5f}  inner grad {float(g_inner(theta, xd, ld, penalty).abs().max()):.1e}  '
-                  f'min mass {float(mass.detach().min()) * cluster_num / len(z):.3f}')
-        if callback and (step % checkpoint_every == 0 or step == steps) and callback(step, xd * scale + offset, ld):
-            print(f'stage2 early stop at step {step}')
-            break
+        moments = SoftMoments.apply(u, v, assign, own_logit, material, chunk)
+        centers, labels = decode(moments.detach(), z.shape[1])
         if step == steps:
-            break
-        # d outer/d(x, labels) = -d/d(x, labels) [ grad_theta inner . H^{-1} grad_theta outer ]
-        hvp = lambda w: jvp(lambda t: g_inner(t, xd, ld, penalty), (theta,), (w,))[1]
-        g_outer = grad(ce)(theta, z, q)
-        def quadratic(w):
-            hw = hvp(w)
-            return (w * hw).sum() / 2 - (g_outer * w).sum(), hw - g_outer
-        s = minimize(quadratic, torch.zeros_like(g_outer) if s is None else s, tol=1e-3 * float(g_outer.abs().max()))
+            return centers * scale + offset, labels
+        x = augment(centers)
+        theta = fit_head(x, labels, theta, penalty)
+        value, outer_gradient = outer_loss(nodes, q, theta)
+        scale0 = scale0 or value
+        multiply, diagonal = head_hessian(x, theta, penalty)
+        vector = conjugate_gradient(multiply, outer_gradient, diagonal, vector)
+        variable = moments.detach().requires_grad_()
+        c, l = decode(variable, z.shape[1])
+        direction, = torch.autograd.grad(-(head_gradient(augment(c), l, theta, penalty) * vector).sum(), variable)
         optimizer.zero_grad()
-        (-(g_inner(theta, x, labels, penalty) * s).sum() / loss_scale).backward()
+        moments.backward(direction / scale0)
         optimizer.step()
-    value, step, x, labels = best
-    print(f'stage2 best step {step}: outer CE {value:.5f} (step 0: {loss_scale:.5f})')
-    return x * scale + offset, labels
