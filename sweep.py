@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 
 from src.bilevel import bilevel
 from src.clustering import cell_means, cluster
@@ -22,7 +23,8 @@ parser = get_parser()
 parser.add_argument('--stage', choices=['teachers', 'grid', 'summary'], required=True)
 parser.add_argument('--out', type=str, required=True)
 parser.add_argument('--lams', type=float, nargs='*', default=LAMS)
-parser.add_argument('--select', choices=['acc', 'ce'], default='acc')
+parser.add_argument('--select', choices=['acc', 'ce', 'calib'], default='acc')
+parser.add_argument('--pools', type=str, nargs='*', default=None)
 args = parser.parse_args()
 make_deterministic()
 out = Path(args.out)
@@ -38,6 +40,19 @@ def save(obj, path):
 
 def teacher_name(wd, dropout, seed):
     return f'wd{wd:g}_d{dropout:g}_s{seed}'
+
+
+def calibrated_teacher():
+    rows = []
+    for pool in map(Path, args.pools or [args.out]):
+        for name in pd.read_csv(pool / 'teachers.csv').teacher:
+            logits = torch.load(pool / 'teachers' / f'{name}.pt').to(device)
+            for T in TEMPERATURES:
+                ce = F.cross_entropy(logits[graph.val_mask] / T, graph.y[graph.val_mask]).item()
+                rows.append(dict(pool=str(pool), teacher=name, T=T, val_ce=ce))
+    table = pd.DataFrame(rows)
+    save(table, ratio_dir.parent / 'calibration.csv')
+    return table.sort_values('val_ce', kind='stable').iloc[0]
 
 
 def picked_teacher():
@@ -80,8 +95,13 @@ if args.stage == 'teachers':
     save(pd.DataFrame(rows), out / 'teachers.csv')
     raise SystemExit
 
-teacher = picked_teacher()
-logits = torch.load(out / 'teachers' / f'{teacher.teacher}.pt').to(device)
+if args.select == 'calib':
+    teacher = calibrated_teacher()
+    args.T = float(teacher['T'])
+    logits = torch.load(Path(teacher.pool) / 'teachers' / f'{teacher.teacher}.pt').to(device)
+else:
+    teacher = picked_teacher()
+    logits = torch.load(out / 'teachers' / f'{teacher.teacher}.pt').to(device)
 h = propagate(graph).double()
 cells = BUDGET[(args.dataset, args.ratio)]
 q = (logits / args.T).softmax(1)
