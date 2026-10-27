@@ -19,7 +19,7 @@ BEST = {
 }
 
 
-def get_args():
+def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='cora', choices=['cora', 'citeseer', 'arxiv', 'flickr', 'reddit'])
     parser.add_argument('--ratio', type=float, default=0.013)
@@ -43,7 +43,11 @@ def get_args():
     parser.add_argument('--steps', type=int, default=None, help='-1 for stage 1 only')
     parser.add_argument('--rank', type=int, default=16)
     parser.add_argument('--stage2_lr', type=float, default=0.1)
-    args = parser.parse_args()
+    return parser
+
+
+def get_args():
+    args = get_parser().parse_args()
     for name, value in BEST[(args.dataset, args.ratio)].items():
         if getattr(args, name) is None:
             setattr(args, name, value)
