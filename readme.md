@@ -8,7 +8,7 @@
    Condensed features are cell means of `S^2 X`, condensed labels are cell means of `q`, and the condensed adjacency is the identity.
 3. Stage 2: the hard assignment is relaxed to `softmax(s onehot + U V^T / sqrt(16))` (own-cell probability 0.99, `U = 0` at the start)
    and `U, V` are trained with Adam (lr 0.1) so that a ridge-regularized linear head fitted on the condensed nodes minimizes the teacher cross-entropy on all original nodes.
-4. Evaluation: 2-layer GCN student (hidden 256, dropout 0.5, lr 0.01, weight decay 5e-4, 1000 epochs, lr x0.1 at epoch 500), trained on the condensed graph with soft labels; test accuracy at the epoch with the best validation accuracy (checked every 10 epochs), seeds 100-109.
+4. Evaluation: 2-layer GCN student (hidden 256, dropout 0.5, lr 0.01, weight decay 5e-4, 1000 epochs, lr x0.1 at epoch 500), trained on the condensed graph with soft labels; test accuracy at the epoch with the best validation accuracy (checked every 10 epochs), averaged over the student seeds 0-4 that were used for the validation selection.
 
 ## Usage
 
