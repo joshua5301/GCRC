@@ -15,7 +15,7 @@ def train_teacher(args, graph, val, test):
             optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.1, weight_decay=args.teacher_wd)
         model.train()
         optimizer.zero_grad()
-        F.nll_loss(model(graph.x, graph.edge_index)[graph.train_mask], graph.y[graph.train_mask]).backward()
+        F.nll_loss(model(graph.x, graph.adj)[graph.train_mask], graph.y[graph.train_mask]).backward()
         optimizer.step()
         if epoch % args.eval_every and epoch != args.epochs:
             continue
@@ -25,5 +25,5 @@ def train_teacher(args, graph, val, test):
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        logits = model(graph.x, graph.edge_index).double()
+        logits = model(graph.x, graph.adj).double()
     return logits, best_acc, accuracy(model, *test)

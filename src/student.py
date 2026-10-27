@@ -7,7 +7,6 @@ from src.models import GCN, accuracy
 def train_student(args, x, y, val, test, seed):
     seed_everything(seed)
     model = GCN(x.shape[1], args.hidden, y.shape[1], args.dropout).to(x.device)
-    edge_index = torch.empty(2, 0, dtype=torch.long, device=x.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     best_val, best_test = -1.0, 0.0
     for epoch in range(1, args.student_epochs + 1):
@@ -15,7 +14,7 @@ def train_student(args, x, y, val, test, seed):
             optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.1, weight_decay=args.weight_decay)
         model.train()
         optimizer.zero_grad()
-        (-(y * model(x, edge_index)).sum(1).mean()).backward()
+        (-(y * model(x)).sum(1).mean()).backward()
         optimizer.step()
         if epoch % args.eval_every and epoch != args.student_epochs:
             continue
