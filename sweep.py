@@ -28,6 +28,8 @@ parser.add_argument('--pools', type=str, nargs='*', default=None)
 parser.add_argument('--teacher_model', choices=['gcn', 'sgc'], default='gcn')
 parser.add_argument('--teacher_wds', type=float, nargs='*', default=TEACHER_WDS)
 parser.add_argument('--teacher_seeds', type=int, nargs='*', default=TEACHER_SEEDS)
+parser.add_argument('--teacher_layers', type=int, nargs='*', default=[2])
+parser.add_argument('--teacher_hiddens', type=int, nargs='*', default=[256])
 parser.add_argument('--teacher', type=str, default=None)
 parser.add_argument('--joint', action='store_true')
 args = parser.parse_args()
@@ -43,8 +45,9 @@ def save(obj, path):
     os.replace(tmp, path)
 
 
-def teacher_name(wd, dropout, seed):
-    return f'wd{wd:g}_d{dropout:g}_s{seed}'
+def teacher_name(wd, dropout, seed, layers=2, hidden=256):
+    arch = '' if (layers, hidden) == (2, 256) else f'L{layers}_h{hidden}_'
+    return f'{arch}wd{wd:g}_d{dropout:g}_s{seed}'
 
 
 def calibrated_teacher():
@@ -105,11 +108,12 @@ if args.stage == 'teachers' and args.teacher_model == 'sgc':
 
 if args.stage == 'teachers':
     rows = []
-    for wd, dropout, seed in itertools.product(args.teacher_wds, TEACHER_DROPOUTS, args.teacher_seeds):
-        name = teacher_name(wd, dropout, seed)
-        teacher = train_teacher(args, graph, val, test, seed, wd, dropout)
+    for layers, hidden, wd, dropout, seed in itertools.product(args.teacher_layers, args.teacher_hiddens, args.teacher_wds,
+                                                               TEACHER_DROPOUTS, args.teacher_seeds):
+        name = teacher_name(wd, dropout, seed, layers, hidden)
+        teacher = train_teacher(args, graph, val, test, seed, wd, dropout, layers, hidden)
         save(teacher['logits'].cpu(), out / 'teachers' / f'{name}.pt')
-        rows.append(dict(teacher=name, wd=wd, dropout=dropout, seed=seed, val_acc=teacher['val_acc'], val_ce=teacher['val_ce'],
+        rows.append(dict(teacher=name, layers=layers, hidden=hidden, wd=wd, dropout=dropout, seed=seed, val_acc=teacher['val_acc'], val_ce=teacher['val_ce'],
                          test_acc=teacher['test_acc']))
         print(rows[-1], flush=True)
     save(pd.DataFrame(rows), out / 'teachers.csv')

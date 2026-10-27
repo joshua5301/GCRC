@@ -5,9 +5,9 @@ from torch_geometric import seed_everything
 from src.models import GCN, accuracy, evaluate
 
 
-def train_teacher(args, graph, val, test, seed, wd, dropout):
+def train_teacher(args, graph, val, test, seed, wd, dropout, layers=2, hidden=None):
     seed_everything(seed)
-    model = GCN(graph.num_features, args.hidden, int(graph.y.max()) + 1, dropout).to(graph.x.device)
+    model = GCN(graph.num_features, hidden or args.hidden, int(graph.y.max()) + 1, dropout, layers).to(graph.x.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=wd)
     best, best_state = None, None
     for epoch in range(1, args.epochs + 1):

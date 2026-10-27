@@ -6,9 +6,10 @@ from src.ops import Propagate
 
 
 class GCN(torch.nn.Module):
-    def __init__(self, nin, nhid, nout, dropout=0.5):
+    def __init__(self, nin, nhid, nout, dropout=0.5, layers=2):
         super().__init__()
-        self.layers = torch.nn.ModuleList([GCNConv(nin, nhid), GCNConv(nhid, nout)])
+        sizes = [nin] + [nhid] * (layers - 1) + [nout]
+        self.layers = torch.nn.ModuleList([GCNConv(a, b) for a, b in zip(sizes[:-1], sizes[1:])])
         self.dropout = dropout
 
     def forward(self, x, adj=None):
@@ -17,7 +18,7 @@ class GCN(torch.nn.Module):
             if adj is not None:
                 x = Propagate.apply(x, adj)
             x = x + layer.bias
-            if i == 0:
+            if i < len(self.layers) - 1:
                 x = F.dropout(F.relu(x), self.dropout, training=self.training)
         return F.log_softmax(x, dim=1)
 
