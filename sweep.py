@@ -32,10 +32,12 @@ parser.add_argument('--teacher_layers', type=int, nargs='*', default=[2])
 parser.add_argument('--teacher_hiddens', type=int, nargs='*', default=[256])
 parser.add_argument('--teacher', type=str, default=None)
 parser.add_argument('--joint', action='store_true')
+parser.add_argument('--ensemble', type=int, default=1)
 args = parser.parse_args()
 make_deterministic()
 out = Path(args.out)
-ratio_dir = out / (f'teacher_{args.teacher}' if args.teacher else f'select_{args.select}') / f'ratio_{args.ratio:g}'
+ensemble = f'_k{args.ensemble}' if args.ensemble > 1 else ''
+ratio_dir = out / (f'teacher_{args.teacher}' if args.teacher else f'select_{args.select}{ensemble}') / f'ratio_{args.ratio:g}'
 
 
 def save(obj, path):
@@ -61,6 +63,27 @@ def calibrated_teacher():
     table = pd.DataFrame(rows)
     save(table, ratio_dir.parent / 'calibration.csv')
     return table.sort_values('val_ce', kind='stable').iloc[0]
+
+
+def ensemble_teacher():
+    names = pd.read_csv(out / 'teachers.csv').teacher
+    configs = sorted({name.rsplit('_s', 1)[0] for name in names})
+    rows, members = [], {}
+    for config in configs:
+        seeds = sorted(int(name.rsplit('_s', 1)[1]) for name in names if name.rsplit('_s', 1)[0] == config)[:args.ensemble]
+        logits = torch.stack([torch.load(out / 'teachers' / f'{config}_s{seed}.pt').to(device) for seed in seeds]).mean(0)
+        members[config] = logits
+        acc = 100 * (logits[graph.val_mask].argmax(1) == graph.y[graph.val_mask]).double().mean().item()
+        ce = F.cross_entropy(logits[graph.val_mask], graph.y[graph.val_mask]).item()
+        test = 100 * (logits[graph.test_mask].argmax(1) == graph.y[graph.test_mask]).double().mean().item()
+        rows.append(dict(teacher=f'{config}_k{args.ensemble}', seeds=' '.join(map(str, seeds)), val_acc=acc, val_ce=ce, test_acc=test))
+    table = pd.DataFrame(rows)
+    save(table, ratio_dir.parent / 'ensembles.csv')
+    if args.select == 'ce':
+        pick = table.sort_values('val_ce', kind='stable').iloc[0]
+    else:
+        pick = table.sort_values(['val_acc', 'val_ce'], ascending=[False, True], kind='stable').iloc[0]
+    return pick, members[pick.teacher.rsplit('_k', 1)[0]]
 
 
 def picked_teacher():
@@ -123,6 +146,8 @@ if args.select == 'calib':
     teacher = calibrated_teacher()
     args.T = float(teacher['T'])
     logits = torch.load(Path(teacher.pool) / 'teachers' / f'{teacher.teacher}.pt').to(device)
+elif args.ensemble > 1:
+    teacher, logits = ensemble_teacher()
 elif args.teacher:
     teacher = pd.Series(dict(teacher=args.teacher))
     logits = torch.load(out / 'teachers' / f'{args.teacher}.pt').to(device)
