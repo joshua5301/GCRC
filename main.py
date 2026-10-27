@@ -19,8 +19,13 @@ cells = BUDGET[(args.dataset, args.ratio)]
 
 start = time.time()
 h = propagate(graph).double()
-logits, teacher_val, teacher_test = train_teacher(args, graph, val, test)
-print(f'teacher: val {teacher_val:.2f}  test {teacher_test:.2f}')
+seeds = [int(s) for s in args.teacher_seeds.split(',')] if args.teacher_seeds else [args.teacher_seed]
+members = []
+for seed in seeds:
+    member_logits, teacher_val, teacher_test = train_teacher(args, graph, val, test, seed)
+    members.append(member_logits)
+    print(f'teacher seed {seed}: val {teacher_val:.2f}  test {teacher_test:.2f}')
+logits = torch.stack(members).mean(0)
 q = (logits / args.T).softmax(1)
 assign = cluster(h, q, logits.argmax(1), cells, args.lam)
 if args.steps < 0:

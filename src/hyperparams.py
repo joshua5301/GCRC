@@ -37,6 +37,7 @@ def get_args():
     parser.add_argument('--teacher_wd', type=float, default=None)
     parser.add_argument('--teacher_dropout', type=float, default=None)
     parser.add_argument('--teacher_seed', type=int, default=None)
+    parser.add_argument('--teacher_seeds', type=str, default=None, help='comma-separated seeds of a logit-averaged teacher ensemble')
     parser.add_argument('--T', type=float, default=None)
     parser.add_argument('--lam', type=float, default=None)
     parser.add_argument('--penalty', type=float, default=None)
