@@ -13,7 +13,7 @@ from src.data import BUDGET, load_dataset, propagate
 from src.hyperparams import get_parser
 from src.ops import make_deterministic
 from src.student import train_student
-from src.teacher import train_teacher
+from src.teacher import train_linear_teacher, train_teacher
 
 TEACHER_WDS, TEACHER_DROPOUTS, TEACHER_SEEDS = [0.0, 3e-5, 1e-4, 3e-4, 5e-4], [0.5, 0.7, 0.9], [0, 42]
 TEMPERATURES, LAMS, PENALTIES = [0.1, 0.2, 0.5, 1.0, 2.0], [0.0, 0.1, 0.3, 1.0, 3.0, 10.0], [1e-4, 3e-4, 1e-3]
@@ -25,10 +25,14 @@ parser.add_argument('--out', type=str, required=True)
 parser.add_argument('--lams', type=float, nargs='*', default=LAMS)
 parser.add_argument('--select', choices=['acc', 'ce', 'calib'], default='acc')
 parser.add_argument('--pools', type=str, nargs='*', default=None)
+parser.add_argument('--teacher_model', choices=['gcn', 'sgc'], default='gcn')
+parser.add_argument('--teacher_wds', type=float, nargs='*', default=TEACHER_WDS)
+parser.add_argument('--teacher', type=str, default=None)
+parser.add_argument('--joint', action='store_true')
 args = parser.parse_args()
 make_deterministic()
 out = Path(args.out)
-ratio_dir = out / f'select_{args.select}' / f'ratio_{args.ratio:g}'
+ratio_dir = out / (f'teacher_{args.teacher}' if args.teacher else f'select_{args.select}') / f'ratio_{args.ratio:g}'
 
 
 def save(obj, path):
@@ -68,7 +72,10 @@ def search(x, y, val, test):
 
 
 if args.stage == 'summary':
-    rows = pd.concat([pd.read_csv(f) for f in sorted(ratio_dir.glob('T*_lam*.csv'))], ignore_index=True)
+    files = out.glob(f'teacher_*/ratio_{args.ratio:g}/T*_lam*.csv') if args.joint else ratio_dir.glob('T*_lam*.csv')
+    if args.joint:
+        ratio_dir = out / 'joint' / f'ratio_{args.ratio:g}'
+    rows = pd.concat([pd.read_csv(f) for f in sorted(files)], ignore_index=True)
     rows['val_rank'] = rows.search_val.rank(ascending=False, method='min').astype(int)
     rows['test_rank'] = rows.search_test.rank(ascending=False, method='min').astype(int)
     stage1 = rows[rows.step < 0]
@@ -82,6 +89,18 @@ if args.stage == 'summary':
 
 device = torch.device('cpu' if args.gpu < 0 else f'cuda:{args.gpu}')
 graph, val, test = load_dataset(args.dataset, args.data_dir, device)
+
+if args.stage == 'teachers' and args.teacher_model == 'sgc':
+    h = propagate(graph).double()
+    rows = []
+    for wd in args.teacher_wds:
+        name = f'sgc_wd{wd:g}'
+        teacher = train_linear_teacher(graph, h, val, test, wd)
+        save(teacher['logits'].cpu(), out / 'teachers' / f'{name}.pt')
+        rows.append(dict(teacher=name, wd=wd, val_acc=teacher['val_acc'], val_ce=teacher['val_ce'], test_acc=teacher['test_acc']))
+        print(rows[-1], flush=True)
+    save(pd.DataFrame(rows), out / 'teachers.csv')
+    raise SystemExit
 
 if args.stage == 'teachers':
     rows = []
@@ -99,6 +118,9 @@ if args.select == 'calib':
     teacher = calibrated_teacher()
     args.T = float(teacher['T'])
     logits = torch.load(Path(teacher.pool) / 'teachers' / f'{teacher.teacher}.pt').to(device)
+elif args.teacher:
+    teacher = pd.Series(dict(teacher=args.teacher))
+    logits = torch.load(out / 'teachers' / f'{args.teacher}.pt').to(device)
 else:
     teacher = picked_teacher()
     logits = torch.load(out / 'teachers' / f'{teacher.teacher}.pt').to(device)

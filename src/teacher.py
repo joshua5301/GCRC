@@ -29,3 +29,25 @@ def train_teacher(args, graph, val, test, seed, wd, dropout):
         logits = model(graph.x, graph.adj).double()
     val_acc, val_ce = evaluate(model, *val)
     return dict(logits=logits, val_acc=val_acc, val_ce=val_ce, test_acc=accuracy(model, *test))
+
+
+def train_linear_teacher(graph, h, val, test, wd, iterations=500):
+    weight = h.new_zeros(h.shape[1], int(graph.y.max()) + 1, requires_grad=True)
+    bias = h.new_zeros(weight.shape[1], requires_grad=True)
+    optimizer = torch.optim.LBFGS([weight, bias], max_iter=iterations, tolerance_grad=1e-10, tolerance_change=1e-14,
+                                  line_search_fn='strong_wolfe')
+
+    def closure():
+        optimizer.zero_grad()
+        loss = F.cross_entropy(h[graph.train_mask] @ weight + bias, graph.y[graph.train_mask]) + wd / 2 * weight.square().sum()
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    with torch.no_grad():
+        logits = h @ weight + bias
+    scores = {}
+    for split, (_, mask) in (('val', val), ('test', test)):
+        scores[f'{split}_acc'] = 100 * (logits[mask].argmax(1) == graph.y[mask]).double().mean().item()
+        scores[f'{split}_ce'] = F.cross_entropy(logits[mask], graph.y[mask]).item()
+    return dict(logits=logits, val_acc=scores['val_acc'], val_ce=scores['val_ce'], test_acc=scores['test_acc'])
