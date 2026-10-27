@@ -27,6 +27,7 @@ parser.add_argument('--select', choices=['acc', 'ce', 'calib'], default='acc')
 parser.add_argument('--pools', type=str, nargs='*', default=None)
 parser.add_argument('--teacher_model', choices=['gcn', 'sgc'], default='gcn')
 parser.add_argument('--teacher_wds', type=float, nargs='*', default=TEACHER_WDS)
+parser.add_argument('--teacher_seeds', type=int, nargs='*', default=TEACHER_SEEDS)
 parser.add_argument('--teacher', type=str, default=None)
 parser.add_argument('--joint', action='store_true')
 args = parser.parse_args()
@@ -104,7 +105,7 @@ if args.stage == 'teachers' and args.teacher_model == 'sgc':
 
 if args.stage == 'teachers':
     rows = []
-    for wd, dropout, seed in itertools.product(TEACHER_WDS, TEACHER_DROPOUTS, TEACHER_SEEDS):
+    for wd, dropout, seed in itertools.product(args.teacher_wds, TEACHER_DROPOUTS, args.teacher_seeds):
         name = teacher_name(wd, dropout, seed)
         teacher = train_teacher(args, graph, val, test, seed, wd, dropout)
         save(teacher['logits'].cpu(), out / 'teachers' / f'{name}.pt')
