@@ -37,6 +37,7 @@ def get_parser():
     parser.add_argument('--teacher_wd', type=float, default=None)
     parser.add_argument('--teacher_dropout', type=float, default=None)
     parser.add_argument('--teacher_seed', type=int, default=None)
+    parser.add_argument('--teacher_ckpt', type=str, default='acc', choices=['acc', 'ce'])
     parser.add_argument('--T', type=float, default=None)
     parser.add_argument('--lam', type=float, default=None)
     parser.add_argument('--penalty', type=float, default=None)

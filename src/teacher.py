@@ -9,7 +9,7 @@ def train_teacher(args, graph, val, test, seed, wd, dropout):
     seed_everything(seed)
     model = GCN(graph.num_features, args.hidden, int(graph.y.max()) + 1, dropout).to(graph.x.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=wd)
-    best_acc, best_state = -1.0, None
+    best, best_state = None, None
     for epoch in range(1, args.epochs + 1):
         if epoch == args.epochs // 2:
             optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.1, weight_decay=wd)
@@ -19,9 +19,10 @@ def train_teacher(args, graph, val, test, seed, wd, dropout):
         optimizer.step()
         if epoch % args.eval_every and epoch != args.epochs:
             continue
-        acc = accuracy(model, *val)
-        if acc > best_acc:
-            best_acc, best_state = acc, {k: v.detach().clone() for k, v in model.state_dict().items()}
+        acc, ce = evaluate(model, *val)
+        score = -acc if args.teacher_ckpt == 'acc' else ce
+        if best is None or score < best:
+            best, best_state = score, {k: v.detach().clone() for k, v in model.state_dict().items()}
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():

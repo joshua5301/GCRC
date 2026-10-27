@@ -22,10 +22,11 @@ parser = get_parser()
 parser.add_argument('--stage', choices=['teachers', 'grid', 'summary'], required=True)
 parser.add_argument('--out', type=str, required=True)
 parser.add_argument('--lams', type=float, nargs='*', default=LAMS)
+parser.add_argument('--select', choices=['acc', 'ce'], default='acc')
 args = parser.parse_args()
 make_deterministic()
 out = Path(args.out)
-ratio_dir = out / f'ratio_{args.ratio:g}'
+ratio_dir = out / f'select_{args.select}' / f'ratio_{args.ratio:g}'
 
 
 def save(obj, path):
@@ -41,6 +42,8 @@ def teacher_name(wd, dropout, seed):
 
 def picked_teacher():
     table = pd.read_csv(out / 'teachers.csv')
+    if args.select == 'ce':
+        return table.sort_values('val_ce', kind='stable').iloc[0]
     return table.sort_values(['val_acc', 'val_ce'], ascending=[False, True], kind='stable').iloc[0]
 
 
