@@ -9,16 +9,21 @@ class GCN(torch.nn.Module):
         self.layers = torch.nn.ModuleList([GCNConv(nin, nhid), GCNConv(nhid, nout)])
         self.dropout = dropout
 
-    def forward(self, x, edge_index):
-        x = F.relu(self.layers[0](x, edge_index))
-        x = F.dropout(x, self.dropout, training=self.training)
-        return F.log_softmax(self.layers[1](x, edge_index), dim=1)
+    def forward(self, x, adj=None):
+        for i, layer in enumerate(self.layers):
+            x = layer.lin(x)
+            if adj is not None:
+                x = torch.sparse.mm(adj, x)
+            x = x + layer.bias
+            if i == 0:
+                x = F.dropout(F.relu(x), self.dropout, training=self.training)
+        return F.log_softmax(x, dim=1)
 
 
 @torch.no_grad()
 def accuracy(model, graph, mask=None):
     model.eval()
-    pred, y = model(graph.x, graph.edge_index).argmax(1), graph.y
+    pred, y = model(graph.x, graph.adj).argmax(1), graph.y
     if mask is not None:
         pred, y = pred[mask], y[mask]
     return 100 * (pred == y).double().mean().item()

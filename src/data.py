@@ -8,6 +8,7 @@ import torch_geometric.transforms as T
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import Data
 from torch_geometric.datasets import Planetoid
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch_geometric.utils import subgraph
 
 BUDGET = {
@@ -21,7 +22,7 @@ BUDGET = {
 
 def load_dataset(name, root, device):
     if name in ('cora', 'citeseer'):
-        graph = Planetoid(root, name, transform=T.NormalizeFeatures())[0].to(device)
+        graph = with_adj(Planetoid(root, name, transform=T.NormalizeFeatures())[0].to(device))
         return graph, (graph, graph.val_mask), (graph, graph.test_mask)
     folder = Path(root) / ('ogbn-arxiv' if name == 'arxiv' else name) / 'raw'
     adj = sp.load_npz(folder / 'adj_full.npz')
@@ -43,11 +44,17 @@ def load_dataset(name, root, device):
                                   y=torch.LongTensor(labels - labels.min()), train_mask=masks['train'],
                                   val_mask=masks['val'], test_mask=masks['test']))
     if name == 'arxiv':
-        graph = graph.to(device)
+        graph = with_adj(graph.to(device))
         return graph, (graph, graph.val_mask), (graph, graph.test_mask)
-    train, val, test = [induced(graph, masks[split]).to(device) for split in ('train', 'val', 'test')]
+    train, val, test = [with_adj(induced(graph, masks[split]).to(device)) for split in ('train', 'val', 'test')]
     train.train_mask = torch.ones(train.num_nodes, dtype=torch.bool, device=device)
     return train, (val, None), (test, None)
+
+
+def with_adj(graph):
+    edge_index, weight = gcn_norm(graph.edge_index, None, graph.num_nodes, dtype=graph.x.dtype)
+    graph.adj = torch.sparse_coo_tensor(edge_index.flip(0), weight, (graph.num_nodes, graph.num_nodes)).coalesce().to_sparse_csr()
+    return graph
 
 
 def induced(graph, mask):
