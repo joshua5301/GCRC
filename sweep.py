@@ -32,11 +32,12 @@ parser.add_argument('--teacher_layers', type=int, nargs='*', default=[2])
 parser.add_argument('--teacher_hiddens', type=int, nargs='*', default=[256])
 parser.add_argument('--teacher', type=str, default=None)
 parser.add_argument('--joint', action='store_true')
-parser.add_argument('--ensemble', type=int, default=1)
+parser.add_argument('--ensemble', type=int, default=0)
+parser.add_argument('--stage1_only', action='store_true')
 args = parser.parse_args()
 make_deterministic()
 out = Path(args.out)
-ensemble = f'_k{args.ensemble}' if args.ensemble > 1 else ''
+ensemble = f'_k{args.ensemble}' if args.ensemble else ''
 ratio_dir = out / (f'teacher_{args.teacher}' if args.teacher else f'select_{args.select}{ensemble}') / f'ratio_{args.ratio:g}'
 
 
@@ -146,7 +147,7 @@ if args.select == 'calib':
     teacher = calibrated_teacher()
     args.T = float(teacher['T'])
     logits = torch.load(Path(teacher.pool) / 'teachers' / f'{teacher.teacher}.pt').to(device)
-elif args.ensemble > 1:
+elif args.ensemble:
     teacher, logits = ensemble_teacher()
 elif args.teacher:
     teacher = pd.Series(dict(teacher=args.teacher))
@@ -166,7 +167,7 @@ for lam in args.lams:
     rows = [dict(point, penalty=np.nan, step=-1, **dict(zip(['search_val', 'search_test'],
                                                            search(cell_means(h, assign, cells), cell_means(q, assign, cells), val, test))))]
     print(rows[-1], flush=True)
-    for penalty in PENALTIES:
+    for penalty in [] if args.stage1_only else PENALTIES:
         for step, (x, y) in bilevel(h, q, assign, cells, penalty, STEPS, args.rank, args.stage2_lr, every=EVERY).items():
             rows.append(dict(point, penalty=penalty, step=step, **dict(zip(['search_val', 'search_test'], search(x, y, val, test)))))
             print(rows[-1], flush=True)
