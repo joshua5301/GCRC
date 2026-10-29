@@ -104,11 +104,12 @@ if args.stage == 'summary':
     if args.joint:
         ratio_dir = out / 'joint' / f'ratio_{args.ratio:g}'
     rows = pd.concat([pd.read_csv(f) for f in sorted(files)], ignore_index=True)
-    rows['val_rank'] = rows.search_val.rank(ascending=False, method='min').astype(int)
+    rows['val'] = rows.search_val.round(2)  # ties at 2 decimals -> larger step
+    rows['val_rank'] = rows.val.rank(ascending=False, method='min').astype(int)
     rows['test_rank'] = rows.search_test.rank(ascending=False, method='min').astype(int)
     stage1 = rows[rows.step < 0]
-    picks = {'stage1': stage1.sort_values(['search_val', 'step'], ascending=False).iloc[0],
-             'joint_val_pick': rows.sort_values(['search_val', 'step'], ascending=False).iloc[0],
+    picks = {'stage1': stage1.sort_values(['val', 'step'], ascending=False).iloc[0],
+             'joint_val_pick': rows.sort_values(['val', 'step'], ascending=False).iloc[0],
              'oracle': rows.sort_values(['search_test', 'search_val'], ascending=False).iloc[0]}
     summary = pd.DataFrame([dict(phase=phase, **pick) for phase, pick in picks.items()]).assign(points=len(rows))
     save(summary, ratio_dir / 'summary.csv')
@@ -151,7 +152,10 @@ elif args.ensemble:
     teacher, logits = ensemble_teacher()
 elif args.teacher:
     teacher = pd.Series(dict(teacher=args.teacher))
-    logits = torch.load(out / 'teachers' / f'{args.teacher}.pt').to(device)
+    path = out / 'teachers' / f'{args.teacher}.pt'
+    if not path.exists():  # committed teachers (teachers/<dataset>/)
+        path = Path(__file__).parent / 'teachers' / args.dataset / f'{args.teacher}.pt'
+    logits = torch.load(path).to(device)
 else:
     teacher = picked_teacher()
     logits = torch.load(out / 'teachers' / f'{teacher.teacher}.pt').to(device)
