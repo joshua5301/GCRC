@@ -34,6 +34,7 @@ parser.add_argument('--teacher', type=str, default=None)
 parser.add_argument('--joint', action='store_true')
 parser.add_argument('--ensemble', type=int, default=0)
 parser.add_argument('--stage1_only', action='store_true')
+parser.add_argument('--every', type=int, default=EVERY, help='stage 2 checkpoint interval; 0 = last step only')
 args = parser.parse_args()
 make_deterministic()
 out = Path(args.out)
@@ -172,7 +173,7 @@ for lam in args.lams:
                                                            search(cell_means(h, assign, cells), cell_means(q, assign, cells), val, test))))]
     print(rows[-1], flush=True)
     for penalty in [] if args.stage1_only else PENALTIES:
-        for step, (x, y) in bilevel(h, q, assign, cells, penalty, STEPS, args.rank, args.stage2_lr, every=EVERY).items():
+        for step, (x, y) in bilevel(h, q, assign, cells, penalty, STEPS, args.rank, args.stage2_lr, every=args.every or None).items():
             rows.append(dict(point, penalty=penalty, step=step, **dict(zip(['search_val', 'search_test'], search(x, y, val, test)))))
             print(rows[-1], flush=True)
     save(pd.DataFrame(rows), path)
