@@ -102,10 +102,11 @@ def outer_loss(x, q, theta):
     return float(-(q * log_p).sum(1).mean()), (log_p.exp() - q).T @ x / len(x)
 
 
-def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, own=0.99, seed=0, chunk=4096, every=None):
+def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, own=0.99, seed=0, chunk=4096, every=None, leak=None):
     z, offset, scale = rms_normalize(h)
     material, nodes = torch.cat((z.new_ones(len(z), 1), z, q), 1), augment(z)
-    own_logit = math.log(own / (1 - own) * (cells - 1))
+    # leak = probability of each other cell at u = 0 (overrides own)
+    own_logit = math.log((1 - (cells - 1) * leak) / leak) if leak else math.log(own / (1 - own) * (cells - 1))
     generator = torch.Generator(device=z.device).manual_seed(seed)
     u = z.new_zeros(len(z), rank).requires_grad_()
     v = torch.randn(cells, rank, generator=generator, device=z.device, dtype=z.dtype).requires_grad_()
