@@ -20,7 +20,7 @@ TEMPERATURES, LAMS, PENALTIES = [0.1, 0.2, 0.5, 1.0, 2.0], [0.0, 0.1, 0.3, 1.0, 
 STEPS, EVERY = 200, 10
 
 parser = get_parser()
-parser.add_argument('--stage', choices=['teachers', 'grid', 'summary'], required=True)
+parser.add_argument('--stage', choices=['teachers', 'grid', 'seq', 'summary'], required=True)
 parser.add_argument('--out', type=str, required=True)
 parser.add_argument('--lams', type=float, nargs='*', default=LAMS)
 parser.add_argument('--select', choices=['acc', 'ce', 'calib'], default='acc')
@@ -35,7 +35,8 @@ parser.add_argument('--joint', action='store_true')
 parser.add_argument('--ensemble', type=int, default=0)
 parser.add_argument('--stage1_only', action='store_true')
 parser.add_argument('--every', type=int, default=EVERY, help='stage 2 checkpoint interval; 0 = last step only')
-parser.add_argument('--leak', type=float, default=None, help='stage 2 other-cell probability at step 0 (default: own-cell probability 0.99)')
+parser.add_argument('--leak', type=float, default=1e-6, help='stage 2 other-cell probability at step 0')
+parser.add_argument('--topk', type=int, default=1, help='--stage seq: stage 2 at the top-k stage 1 points')
 args = parser.parse_args()
 make_deterministic()
 out = Path(args.out)
@@ -161,15 +162,22 @@ elif args.teacher:
 else:
     teacher = picked_teacher()
     logits = torch.load(out / 'teachers' / f'{teacher.teacher}.pt').to(device)
+points, grid_dir = [(args.T, lam) for lam in args.lams], ratio_dir
+if args.stage == 'seq':  # stage 2 only at the top-k stage 1 points by val (T*_lam*.csv from --stage grid --stage1_only)
+    stage1 = pd.concat([pd.read_csv(f) for f in sorted(ratio_dir.glob('T*_lam*.csv'))], ignore_index=True)
+    stage1 = stage1[stage1.step < 0].assign(val=lambda d: d.search_val.round(2))
+    picks = stage1.sort_values(['val', 'T', 'lam'], ascending=[False, True, True], kind='stable').head(args.topk)
+    print(picks[['T', 'lam', 'search_val', 'search_test']].to_string(index=False), flush=True)
+    points, args.stage1_only, grid_dir = list(zip(picks['T'], picks.lam)), False, ratio_dir / 'seq'
 h = propagate(graph).double()
 cells = BUDGET[(args.dataset, args.ratio)]
-q = (logits / args.T).softmax(1)
-for lam in args.lams:
-    path = ratio_dir / f'T{args.T:g}_lam{lam:g}.csv'
+for T, lam in points:
+    path = grid_dir / f'T{T:g}_lam{lam:g}.csv'
     if path.exists():
         continue
+    q = (logits / T).softmax(1)
     assign = cluster(h, q, logits.argmax(1), cells, lam)
-    point = dict(teacher=teacher.teacher, T=args.T, lam=lam)
+    point = dict(teacher=teacher.teacher, T=T, lam=lam)
     rows = [dict(point, penalty=np.nan, step=-1, **dict(zip(['search_val', 'search_test'],
                                                            search(cell_means(h, assign, cells), cell_means(q, assign, cells), val, test))))]
     print(rows[-1], flush=True)
