@@ -102,22 +102,20 @@ def outer_loss(x, q, theta):
     return float(-(q * log_p).sum(1).mean()), (log_p.exp() - q).T @ x / len(x)
 
 
-def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, leak=1e-6, seed=0, chunk=4096, every=None):
+def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, leak=1e-6, seed=0, chunk=4096):
     z, offset, scale = rms_normalize(h)
     material, nodes = torch.cat((z.new_ones(len(z), 1), z, q), 1), augment(z)
-    own_logit = math.log((1 - (cells - 1) * leak) / leak)  # every other cell gets probability leak at u = 0
+    own_logit = math.log((1 - (cells - 1) * leak) / leak)
     generator = torch.Generator(device=z.device).manual_seed(seed)
     u = z.new_zeros(len(z), rank).requires_grad_()
     v = torch.randn(cells, rank, generator=generator, device=z.device, dtype=z.dtype).requires_grad_()
     optimizer = torch.optim.Adam([u, v], lr=lr, eps=1e-12)
-    theta, vector, scale0, condensed = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None, {}
+    theta, vector, scale0 = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None
     for step in range(steps + 1):
         moments = SoftMoments.apply(u, v, assign, own_logit, material, chunk)
         centers, labels = decode(moments.detach(), z.shape[1])
-        if step == steps or (every and step % every == 0):
-            condensed[step] = (centers * scale + offset, labels)
         if step == steps:
-            return condensed
+            return centers * scale + offset, labels
         x = augment(centers)
         theta = fit_head(x, labels, theta, penalty)
         value, outer_gradient = outer_loss(nodes, q, theta)

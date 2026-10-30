@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 
 from src.bilevel import bilevel
 from src.clustering import cell_means, cluster
@@ -13,35 +12,20 @@ from src.data import BUDGET, load_dataset, propagate
 from src.hyperparams import get_parser
 from src.ops import make_deterministic
 from src.student import train_student
-from src.teacher import train_linear_teacher, train_teacher
+from src.teacher import train_teacher
 
-TEACHER_WDS, TEACHER_DROPOUTS, TEACHER_SEEDS = [0.0, 3e-5, 1e-4, 3e-4, 5e-4], [0.5, 0.7, 0.9], [0, 42]
-TEMPERATURES, LAMS, PENALTIES = [0.1, 0.2, 0.5, 1.0, 2.0], [0.0, 0.1, 0.3, 1.0, 3.0, 10.0], [1e-4, 3e-4, 1e-3]
-STEPS, EVERY = 200, 10
+LAYERS, WDS, DROPOUTS = [2, 3, 4], [0.0, 3e-5, 1e-4, 3e-4, 5e-4], [0.5, 0.7, 0.9]
+TEMPERATURES, LAMS, PENALTIES = [0.1, 0.2, 0.5, 1.0, 2.0], [0.1, 0.3, 1.0, 3.0], [1e-4, 3e-4, 1e-3]
 
 parser = get_parser()
-parser.add_argument('--stage', choices=['teachers', 'grid', 'seq', 'summary'], required=True)
+parser.add_argument('--stage', choices=['teachers', 'stage1', 'stage2'], required=True)
 parser.add_argument('--out', type=str, required=True)
+parser.add_argument('--temperatures', type=float, nargs='*', default=TEMPERATURES)
 parser.add_argument('--lams', type=float, nargs='*', default=LAMS)
-parser.add_argument('--select', choices=['acc', 'ce', 'calib'], default='acc')
-parser.add_argument('--pools', type=str, nargs='*', default=None)
-parser.add_argument('--teacher_model', choices=['gcn', 'sgc'], default='gcn')
-parser.add_argument('--teacher_wds', type=float, nargs='*', default=TEACHER_WDS)
-parser.add_argument('--teacher_seeds', type=int, nargs='*', default=TEACHER_SEEDS)
-parser.add_argument('--teacher_layers', type=int, nargs='*', default=[2])
-parser.add_argument('--teacher_hiddens', type=int, nargs='*', default=[256])
-parser.add_argument('--teacher', type=str, default=None)
-parser.add_argument('--joint', action='store_true')
-parser.add_argument('--ensemble', type=int, default=0)
-parser.add_argument('--stage1_only', action='store_true')
-parser.add_argument('--every', type=int, default=EVERY, help='stage 2 checkpoint interval; 0 = last step only')
-parser.add_argument('--leak', type=float, default=1e-6, help='stage 2 other-cell probability at step 0')
-parser.add_argument('--topk', type=int, default=1, help='--stage seq: stage 2 at the top-k stage 1 points')
 args = parser.parse_args()
 make_deterministic()
-out = Path(args.out)
-ensemble = f'_k{args.ensemble}' if args.ensemble else ''
-ratio_dir = out / (f'teacher_{args.teacher}' if args.teacher else f'select_{args.select}{ensemble}') / f'ratio_{args.ratio:g}'
+device = torch.device('cpu' if args.gpu < 0 else f'cuda:{args.gpu}')
+out = Path(args.out) / args.dataset
 
 
 def save(obj, path):
@@ -51,139 +35,75 @@ def save(obj, path):
     os.replace(tmp, path)
 
 
-def teacher_name(wd, dropout, seed, layers=2, hidden=256):
-    arch = '' if (layers, hidden) == (2, 256) else f'L{layers}_h{hidden}_'
-    return f'{arch}wd{wd:g}_d{dropout:g}_s{seed}'
-
-
-def calibrated_teacher():
-    rows = []
-    for pool in map(Path, args.pools or [args.out]):
-        for name in pd.read_csv(pool / 'teachers.csv').teacher:
-            logits = torch.load(pool / 'teachers' / f'{name}.pt').to(device)
-            for T in TEMPERATURES:
-                ce = F.cross_entropy(logits[graph.val_mask] / T, graph.y[graph.val_mask]).item()
-                rows.append(dict(pool=str(pool), teacher=name, T=T, val_ce=ce))
-    table = pd.DataFrame(rows)
-    save(table, ratio_dir.parent / 'calibration.csv')
-    return table.sort_values('val_ce', kind='stable').iloc[0]
-
-
-def ensemble_teacher():
-    names = pd.read_csv(out / 'teachers.csv').teacher
-    configs = sorted({name.rsplit('_s', 1)[0] for name in names})
-    rows, members = [], {}
-    for config in configs:
-        seeds = sorted(int(name.rsplit('_s', 1)[1]) for name in names if name.rsplit('_s', 1)[0] == config)[:args.ensemble]
-        logits = torch.stack([torch.load(out / 'teachers' / f'{config}_s{seed}.pt').to(device) for seed in seeds]).mean(0)
-        members[config] = logits
-        acc = 100 * (logits[graph.val_mask].argmax(1) == graph.y[graph.val_mask]).double().mean().item()
-        ce = F.cross_entropy(logits[graph.val_mask], graph.y[graph.val_mask]).item()
-        test = 100 * (logits[graph.test_mask].argmax(1) == graph.y[graph.test_mask]).double().mean().item()
-        rows.append(dict(teacher=f'{config}_k{args.ensemble}', seeds=' '.join(map(str, seeds)), val_acc=acc, val_ce=ce, test_acc=test))
-    table = pd.DataFrame(rows)
-    save(table, ratio_dir.parent / 'ensembles.csv')
-    if args.select == 'ce':
-        pick = table.sort_values('val_ce', kind='stable').iloc[0]
-    else:
-        pick = table.sort_values(['val_acc', 'val_ce'], ascending=[False, True], kind='stable').iloc[0]
-    return pick, members[pick.teacher.rsplit('_k', 1)[0]]
+def teacher_name(layers, wd, dropout, seed):
+    return f'{"" if layers == 2 else f"L{layers}_h{args.hidden}_"}wd{wd:g}_d{dropout:g}_s{seed}'
 
 
 def picked_teacher():
-    table = pd.read_csv(out / 'teachers.csv')
-    if args.select == 'ce':
-        return table.sort_values('val_ce', kind='stable').iloc[0]
-    return table.sort_values(['val_acc', 'val_ce'], ascending=[False, True], kind='stable').iloc[0]
+    if args.teacher:
+        return args.teacher
+    table = pd.read_csv(out / 'teachers.csv').assign(val=lambda d: d.val_acc.round(2))
+    return table.sort_values(['val', 'val_ce'], ascending=[False, True], kind='stable').teacher.iloc[0]
 
 
-def search(x, y, val, test):
+def load_teacher(name):
+    path = out / 'teachers' / f'{name}.pt'
+    return torch.load(path if path.exists() else Path(args.teacher_dir) / args.dataset / f'{name}.pt').to(device)
+
+
+def search(x, y):
     scores = np.array([train_student(args, x.float(), y.float(), val, test, args.seed + i) for i in range(args.repeat)])
-    return scores[:, 0].mean(), scores[:, 1].mean(), scores[:, 2].mean()  # val acc, test acc, val CE at the val-acc checkpoint
+    return dict(zip(['val', 'test', 'val_ce'], scores.mean(0)))
 
 
-if args.stage == 'summary':
-    files = out.glob(f'teacher_*/ratio_{args.ratio:g}/T*_lam*.csv') if args.joint else ratio_dir.glob('T*_lam*.csv')
-    if args.joint:
-        ratio_dir = out / 'joint' / f'ratio_{args.ratio:g}'
-    rows = pd.concat([pd.read_csv(f) for f in sorted(files)], ignore_index=True)
-    rows['val'] = rows.search_val.round(2)  # ties at 2 decimals -> larger step
-    rows['val_rank'] = rows.val.rank(ascending=False, method='min').astype(int)
-    rows['test_rank'] = rows.search_test.rank(ascending=False, method='min').astype(int)
-    stage1 = rows[rows.step < 0]
-    picks = {'stage1': stage1.sort_values(['val', 'step'], ascending=False).iloc[0],
-             'joint_val_pick': rows.sort_values(['val', 'step'], ascending=False).iloc[0],
-             'oracle': rows.sort_values(['search_test', 'search_val'], ascending=False).iloc[0]}
-    summary = pd.DataFrame([dict(phase=phase, **pick) for phase, pick in picks.items()]).assign(points=len(rows))
-    save(summary, ratio_dir / 'summary.csv')
-    print(summary.to_string(index=False))
-    raise SystemExit
-
-device = torch.device('cpu' if args.gpu < 0 else f'cuda:{args.gpu}')
 graph, val, test = load_dataset(args.dataset, args.data_dir, device)
-
-if args.stage == 'teachers' and args.teacher_model == 'sgc':
-    h = propagate(graph).double()
-    rows = []
-    for wd in args.teacher_wds:
-        name = f'sgc_wd{wd:g}'
-        teacher = train_linear_teacher(graph, h, val, test, wd)
-        save(teacher['logits'].cpu(), out / 'teachers' / f'{name}.pt')
-        rows.append(dict(teacher=name, wd=wd, val_acc=teacher['val_acc'], val_ce=teacher['val_ce'], test_acc=teacher['test_acc']))
-        print(rows[-1], flush=True)
-    save(pd.DataFrame(rows), out / 'teachers.csv')
-    raise SystemExit
 
 if args.stage == 'teachers':
     rows = []
-    for layers, hidden, wd, dropout, seed in itertools.product(args.teacher_layers, args.teacher_hiddens, args.teacher_wds,
-                                                               TEACHER_DROPOUTS, args.teacher_seeds):
-        name = teacher_name(wd, dropout, seed, layers, hidden)
-        teacher = train_teacher(args, graph, val, test, seed, wd, dropout, layers, hidden)
+    for layers, wd, dropout in itertools.product(LAYERS, WDS, DROPOUTS):
+        name = teacher_name(layers, wd, dropout, args.seed)
+        teacher = train_teacher(args, graph, val, test, args.seed, wd, dropout, layers, args.hidden)
         save(teacher['logits'].cpu(), out / 'teachers' / f'{name}.pt')
-        rows.append(dict(teacher=name, layers=layers, hidden=hidden, wd=wd, dropout=dropout, seed=seed, val_acc=teacher['val_acc'], val_ce=teacher['val_ce'],
-                         test_acc=teacher['test_acc']))
+        rows.append(dict(teacher=name, layers=layers, wd=wd, dropout=dropout, seed=args.seed,
+                         **{k: teacher[k] for k in ('val_acc', 'val_ce', 'test_acc')}))
         print(rows[-1], flush=True)
     save(pd.DataFrame(rows), out / 'teachers.csv')
+    print('picked', picked_teacher())
     raise SystemExit
 
-if args.select == 'calib':
-    teacher = calibrated_teacher()
-    args.T = float(teacher['T'])
-    logits = torch.load(Path(teacher.pool) / 'teachers' / f'{teacher.teacher}.pt').to(device)
-elif args.ensemble:
-    teacher, logits = ensemble_teacher()
-elif args.teacher:
-    teacher = pd.Series(dict(teacher=args.teacher))
-    path = out / 'teachers' / f'{args.teacher}.pt'
-    if not path.exists():  # committed teachers (teachers/<dataset>/)
-        path = Path(__file__).parent / 'teachers' / args.dataset / f'{args.teacher}.pt'
-    logits = torch.load(path).to(device)
-else:
-    teacher = picked_teacher()
-    logits = torch.load(out / 'teachers' / f'{teacher.teacher}.pt').to(device)
-points, grid_dir = [(args.T, lam) for lam in args.lams], ratio_dir
-if args.stage == 'seq':  # stage 2 only at the top-k stage 1 points by val (T*_lam*.csv from --stage grid --stage1_only)
-    stage1 = pd.concat([pd.read_csv(f) for f in sorted(ratio_dir.glob('T*_lam*.csv'))], ignore_index=True)
-    stage1 = stage1[stage1.step < 0].assign(val=lambda d: d.search_val.round(2))
-    picks = stage1.sort_values(['val', 'T', 'lam'], ascending=[False, True, True], kind='stable').head(args.topk)
-    print(picks[['T', 'lam', 'search_val', 'search_test']].to_string(index=False), flush=True)
-    points, args.stage1_only, grid_dir = list(zip(picks['T'], picks.lam)), False, ratio_dir / 'seq'
+name = picked_teacher()
+logits = load_teacher(name)
 h = propagate(graph).double()
 cells = BUDGET[(args.dataset, args.ratio)]
-for T, lam in points:
-    path = grid_dir / f'T{T:g}_lam{lam:g}.csv'
-    if path.exists():
-        continue
+ratio_dir = out / name / f'ratio_{args.ratio:g}'
+
+
+def condense(T, lam):
     q = (logits / T).softmax(1)
-    assign = cluster(h, q, logits.argmax(1), cells, lam)
-    point = dict(teacher=teacher.teacher, T=T, lam=lam)
-    rows = [dict(point, penalty=np.nan, step=-1, **dict(zip(['search_val', 'search_test', 'search_val_ce'],
-                                                           search(cell_means(h, assign, cells), cell_means(q, assign, cells), val, test))))]
+    return q, cluster(h, q, logits.argmax(1), cells, lam)
+
+
+if args.stage == 'stage1':
+    for T, lam in itertools.product(args.temperatures, args.lams):
+        path = ratio_dir / f'T{T:g}_lam{lam:g}.csv'
+        if path.exists():
+            continue
+        q, assign = condense(T, lam)
+        row = dict(T=T, lam=lam, **search(cell_means(h, assign, cells), cell_means(q, assign, cells)))
+        save(pd.DataFrame([row]), path)
+        print(row, flush=True)
+    raise SystemExit
+
+stage1 = pd.concat([pd.read_csv(ratio_dir / f'T{T:g}_lam{lam:g}.csv') for T, lam in itertools.product(args.temperatures, args.lams)])
+stage1 = stage1.assign(rounded=stage1.val.round(2)).sort_values(['rounded', 'val_ce'], ascending=[False, True], kind='stable')
+T, lam = stage1.iloc[0][['T', 'lam']]
+q, assign = condense(T, lam)
+rows = [dict(stage1.iloc[0][['T', 'lam', 'val', 'test', 'val_ce']], penalty=np.nan)]
+for penalty in PENALTIES:
+    rows.append(dict(T=T, lam=lam, penalty=penalty, **search(*bilevel(h, q, assign, cells, penalty, args.steps, args.rank, args.stage2_lr, args.leak))))
     print(rows[-1], flush=True)
-    for penalty in [] if args.stage1_only else PENALTIES:
-        for step, (x, y) in bilevel(h, q, assign, cells, penalty, STEPS, args.rank, args.stage2_lr, every=args.every or None,
-                                    leak=args.leak).items():
-            rows.append(dict(point, penalty=penalty, step=step, **dict(zip(['search_val', 'search_test', 'search_val_ce'], search(x, y, val, test)))))
-            print(rows[-1], flush=True)
-    save(pd.DataFrame(rows), path)
+stage2 = pd.DataFrame(rows)
+save(stage2, ratio_dir / 'stage2.csv')
+pick = stage2.assign(rounded=stage2.val.round(2), stage=stage2.penalty.notna()).sort_values(['rounded', 'stage'], ascending=False, kind='stable')
+print(pick.drop(columns=['rounded', 'stage']).to_string(index=False))
+save(pick.iloc[:1].drop(columns=['rounded', 'stage']), ratio_dir / 'summary.csv')
