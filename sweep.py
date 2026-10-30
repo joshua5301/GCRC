@@ -99,7 +99,7 @@ def picked_teacher():
 
 def search(x, y, val, test):
     scores = np.array([train_student(args, x.float(), y.float(), val, test, args.seed + i) for i in range(args.repeat)])
-    return scores[:, 0].mean(), scores[:, 1].mean()
+    return scores[:, 0].mean(), scores[:, 1].mean(), scores[:, 2].mean()  # val acc, test acc, val CE at the val-acc checkpoint
 
 
 if args.stage == 'summary':
@@ -178,12 +178,12 @@ for T, lam in points:
     q = (logits / T).softmax(1)
     assign = cluster(h, q, logits.argmax(1), cells, lam)
     point = dict(teacher=teacher.teacher, T=T, lam=lam)
-    rows = [dict(point, penalty=np.nan, step=-1, **dict(zip(['search_val', 'search_test'],
+    rows = [dict(point, penalty=np.nan, step=-1, **dict(zip(['search_val', 'search_test', 'search_val_ce'],
                                                            search(cell_means(h, assign, cells), cell_means(q, assign, cells), val, test))))]
     print(rows[-1], flush=True)
     for penalty in [] if args.stage1_only else PENALTIES:
         for step, (x, y) in bilevel(h, q, assign, cells, penalty, STEPS, args.rank, args.stage2_lr, every=args.every or None,
                                     leak=args.leak).items():
-            rows.append(dict(point, penalty=penalty, step=step, **dict(zip(['search_val', 'search_test'], search(x, y, val, test)))))
+            rows.append(dict(point, penalty=penalty, step=step, **dict(zip(['search_val', 'search_test', 'search_val_ce'], search(x, y, val, test)))))
             print(rows[-1], flush=True)
     save(pd.DataFrame(rows), path)
