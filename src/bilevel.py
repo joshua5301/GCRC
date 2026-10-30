@@ -5,42 +5,6 @@ import torch
 from src.clustering import rms_normalize
 
 
-def soft_assignment(u, v, assign, own_logit):
-    logits = u @ v.T / math.sqrt(u.shape[1])
-    logits[torch.arange(len(u), device=u.device), assign] += own_logit
-    return logits.softmax(1)
-
-
-class SoftMoments(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, u, v, assign, own_logit, material, chunk):
-        ctx.save_for_backward(u, v, assign, material)
-        ctx.own_logit, ctx.chunk = own_logit, chunk
-        moments = material.new_zeros(len(v), material.shape[1])
-        for start in range(0, len(u), chunk):
-            end = start + chunk
-            moments += soft_assignment(u[start:end], v, assign[start:end], own_logit).T @ material[start:end]
-        return moments / len(u)
-
-    @staticmethod
-    def backward(ctx, gradient):
-        u, v, assign, material = ctx.saved_tensors
-        du, dv = torch.empty_like(u), torch.zeros_like(v)
-        for start in range(0, len(u), ctx.chunk):
-            end = start + ctx.chunk
-            p = soft_assignment(u[start:end], v, assign[start:end], ctx.own_logit)
-            direction = material[start:end] @ gradient.T
-            block = p * (direction - (p * direction).sum(1, keepdim=True)) / (len(u) * math.sqrt(u.shape[1]))
-            du[start:end] = block @ v
-            dv += block.T @ u[start:end]
-        return du, dv, None, None, None, None
-
-
-def decode(moments, dim):
-    mass = moments[:, :1]
-    return moments[:, 1:dim + 1] / mass, moments[:, dim + 1:] / mass
-
-
 def augment(x):
     return torch.cat((x, x.new_ones(len(x), 1)), 1)
 
@@ -102,9 +66,9 @@ def outer_loss(x, q, theta):
     return float(-(q * log_p).sum(1).mean()), (log_p.exp() - q).T @ x / len(x)
 
 
-def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, leak=1e-6, seed=0, chunk=4096):
+def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, leak=1e-6, seed=0):
     z, offset, scale = rms_normalize(h)
-    material, nodes = torch.cat((z.new_ones(len(z), 1), z, q), 1), augment(z)
+    nodes, rows = augment(z), torch.arange(len(z), device=z.device)
     own_logit = math.log((1 - (cells - 1) * leak) / leak)
     generator = torch.Generator(device=z.device).manual_seed(seed)
     u = z.new_zeros(len(z), rank).requires_grad_()
@@ -112,19 +76,19 @@ def bilevel(h, q, assign, cells, penalty, steps, rank=16, lr=0.1, leak=1e-6, see
     optimizer = torch.optim.Adam([u, v], lr=lr, eps=1e-12)
     theta, vector, scale0 = z.new_zeros(q.shape[1], z.shape[1] + 1), None, None
     for step in range(steps + 1):
-        moments = SoftMoments.apply(u, v, assign, own_logit, material, chunk)
-        centers, labels = decode(moments.detach(), z.shape[1])
+        logits = u @ v.T / math.sqrt(rank)
+        logits[rows, assign] += own_logit
+        p = logits.softmax(1)
+        mass = p.sum(0)[:, None]
+        centers, labels = p.T @ z / mass, p.T @ q / mass
         if step == steps:
-            return centers * scale + offset, labels
-        x = augment(centers)
-        theta = fit_head(x, labels, theta, penalty)
+            return centers.detach() * scale + offset, labels.detach()
+        x, y = augment(centers.detach()), labels.detach()
+        theta = fit_head(x, y, theta, penalty)
         value, outer_gradient = outer_loss(nodes, q, theta)
         scale0 = scale0 or value
         multiply, diagonal = head_hessian(x, theta, penalty)
         vector = conjugate_gradient(multiply, outer_gradient, diagonal, vector)
-        variable = moments.detach().requires_grad_()
-        c, l = decode(variable, z.shape[1])
-        direction, = torch.autograd.grad(-(head_gradient(augment(c), l, theta, penalty) * vector).sum(), variable)
         optimizer.zero_grad()
-        moments.backward(direction / scale0)
+        (-(head_gradient(augment(centers), labels, theta, penalty) * vector).sum() / scale0).backward()
         optimizer.step()

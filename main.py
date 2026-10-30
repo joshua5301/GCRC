@@ -24,8 +24,7 @@ if args.train_teacher:
     print(f"teacher: val {teacher['val_acc']:.2f}  test {teacher['test_acc']:.2f}")
     logits = teacher['logits']
 else:
-    arch = '' if args.teacher_layers == 2 else f'L{args.teacher_layers}_h{args.hidden}_'
-    name = f'{arch}wd{args.teacher_wd:g}_d{args.teacher_dropout:g}_s{args.teacher_seed}'
+    name = f'L{args.teacher_layers}_h{args.hidden}_wd{args.teacher_wd:g}_d{args.teacher_dropout:g}_s{args.teacher_seed}'
     logits = torch.load(Path(args.teacher_dir) / args.dataset / f'{name}.pt').to(device)
 q = (logits / args.T).softmax(1)
 assign = cluster(h, q, logits.argmax(1), cells, args.lam)
