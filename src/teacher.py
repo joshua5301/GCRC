@@ -2,17 +2,17 @@ import torch
 import torch.nn.functional as F
 from torch_geometric import seed_everything
 
-from src.models import GCN, accuracy
+from src.models import GCN, accuracy, evaluate
 
 
-def train_teacher(args, graph, val, test):
-    seed_everything(args.teacher_seed)
-    model = GCN(graph.num_features, args.hidden, int(graph.y.max()) + 1, args.teacher_dropout).to(graph.x.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.teacher_wd)
-    best_acc, best_state = -1.0, None
+def train_teacher(args, graph, val, test, seed, wd, dropout, layers=2, hidden=256):
+    seed_everything(seed)
+    model = GCN(graph.num_features, hidden, int(graph.y.max()) + 1, dropout, layers).to(graph.x.device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=wd)
+    best, best_state = None, None
     for epoch in range(1, args.epochs + 1):
         if epoch == args.epochs // 2:
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.1, weight_decay=args.teacher_wd)
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.1, weight_decay=wd)
         model.train()
         optimizer.zero_grad()
         F.nll_loss(model(graph.x, graph.adj)[graph.train_mask], graph.y[graph.train_mask]).backward()
@@ -20,10 +20,11 @@ def train_teacher(args, graph, val, test):
         if epoch % args.eval_every and epoch != args.epochs:
             continue
         acc = accuracy(model, *val)
-        if acc > best_acc:
-            best_acc, best_state = acc, {k: v.detach().clone() for k, v in model.state_dict().items()}
+        if best is None or acc > best:
+            best, best_state = acc, {k: v.detach().clone() for k, v in model.state_dict().items()}
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
         logits = model(graph.x, graph.adj).double()
-    return logits, best_acc, accuracy(model, *test)
+    val_acc, val_ce = evaluate(model, *val)
+    return dict(logits=logits, val_acc=val_acc, val_ce=val_ce, test_acc=accuracy(model, *test))

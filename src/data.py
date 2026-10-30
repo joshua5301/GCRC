@@ -11,6 +11,8 @@ from torch_geometric.datasets import Planetoid
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch_geometric.utils import subgraph
 
+from src.ops import Adjacency, spmm
+
 BUDGET = {
     ('cora', 0.013): 35, ('cora', 0.026): 70, ('cora', 0.052): 140,
     ('citeseer', 0.009): 30, ('citeseer', 0.018): 60, ('citeseer', 0.036): 120,
@@ -53,7 +55,7 @@ def load_dataset(name, root, device):
 
 def with_adj(graph):
     edge_index, weight = gcn_norm(graph.edge_index, None, graph.num_nodes, dtype=graph.x.dtype)
-    graph.adj = torch.sparse_coo_tensor(edge_index.flip(0), weight, (graph.num_nodes, graph.num_nodes)).coalesce().to_sparse_csr()
+    graph.adj = Adjacency(edge_index[1], edge_index[0], weight, graph.num_nodes)
     return graph
 
 
@@ -70,9 +72,9 @@ def propagate(graph, hops=2):
     degree = np.power(np.asarray(adj.sum(1)).flatten(), -0.5)
     degree[np.isinf(degree)] = 0
     adj = (sp.diags(degree) @ adj @ sp.diags(degree)).tocoo().astype(np.float32)
-    adj = torch.sparse_coo_tensor(torch.LongTensor(np.vstack((adj.row, adj.col))), torch.FloatTensor(adj.data),
-                                  (nodes, nodes)).to(graph.x.device)
+    device = graph.x.device
+    adj = Adjacency(torch.LongTensor(adj.row).to(device), torch.LongTensor(adj.col).to(device), torch.FloatTensor(adj.data).to(device), nodes)
     x = graph.x
     for _ in range(hops):
-        x = torch.sparse.mm(adj, x)
+        x = spmm(adj, x)
     return x
