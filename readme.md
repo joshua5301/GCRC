@@ -21,15 +21,12 @@ Validation accuracy of the five students, rounded to 2 decimals.
 
 ```
 python main.py --dataset cora --ratio 0.013
+python main.py --dataset cora --ratio 0.013 --train_teacher
 bash run.sh [gpu] [data_dir]
-
-python sweep.py --dataset cora --ratio 0.013 --stage teachers --out results/
-python sweep.py --dataset cora --ratio 0.013 --stage stage1 --out results/ [--temperatures ...] [--lams ...]
-python sweep.py --dataset cora --ratio 0.013 --stage stage2 --out results/
 ```
 
-`main.py` uses the teachers in `teachers/<dataset>/` and the hyperparameters in `src/hyperparams.py` (`BEST`); any of them can be overridden from the command line (`--stage1_only` skips stage 2).
-`sweep.py` uses the teachers it trained in `--out`, or `--teacher <name>` from `teachers/<dataset>/`.
+By default the teacher is loaded from `teachers/<dataset>/`; `--train_teacher` trains it from scratch with the same configuration (`TEACHERS` in `src/hyperparams.py`).
+The other hyperparameters come from `BEST` in `src/hyperparams.py`; any of them can be overridden from the command line (`--stage1_only` skips stage 2).
 Cora and Citeseer are downloaded by PyG. Ogbn-arxiv, Flickr and Reddit are read from `data_dir/{ogbn-arxiv,flickr,reddit}/raw/` in the GraphSAINT format (`adj_full.npz`, `feats.npy`, `class_map.json`, `role.json`); Flickr and Reddit are inductive.
 
 ## Selected hyperparameters

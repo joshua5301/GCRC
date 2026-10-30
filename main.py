@@ -9,6 +9,7 @@ from src.data import BUDGET, load_dataset, propagate
 from src.hyperparams import get_args
 from src.ops import make_deterministic
 from src.student import train_student
+from src.teacher import train_teacher
 
 args = get_args()
 make_deterministic()
@@ -18,7 +19,14 @@ print(vars(args))
 graph, val, test = load_dataset(args.dataset, args.data_dir, device)
 cells = BUDGET[(args.dataset, args.ratio)]
 h = propagate(graph).double()
-logits = torch.load(Path(args.teacher_dir) / args.dataset / f'{args.teacher}.pt').to(device)
+if args.train_teacher:
+    teacher = train_teacher(args, graph, val, test, args.teacher_seed, args.teacher_wd, args.teacher_dropout, args.teacher_layers, args.hidden)
+    print(f"teacher: val {teacher['val_acc']:.2f}  test {teacher['test_acc']:.2f}")
+    logits = teacher['logits']
+else:
+    arch = '' if args.teacher_layers == 2 else f'L{args.teacher_layers}_h{args.hidden}_'
+    name = f'{arch}wd{args.teacher_wd:g}_d{args.teacher_dropout:g}_s{args.teacher_seed}'
+    logits = torch.load(Path(args.teacher_dir) / args.dataset / f'{name}.pt').to(device)
 q = (logits / args.T).softmax(1)
 assign = cluster(h, q, logits.argmax(1), cells, args.lam)
 if args.penalty is None:
