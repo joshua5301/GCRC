@@ -36,7 +36,7 @@ Cora and Citeseer are downloaded by PyG. Ogbn-arxiv, Flickr and Reddit are read 
 | cora | 0.013 / 0.026 / 0.052 | L4, wd 0, dropout 0.9 | 0.5 / 0.2 / 1 | 0.1 / 1 / 0.3 | 1e-3 / 3e-4 / 1e-4 | 83.56 / 83.78 / 83.44 |
 | citeseer | 0.009 / 0.018 / 0.036 | L2, wd 5e-4, dropout 0.7 | 1 / 0.5 / 1 | 1 / 0.1 / 0.1 | - / - / - | 74.28 / 74.48 / 74.98 |
 | arxiv | 0.0005 / 0.0025 / 0.005 | L4, wd 3e-5, dropout 0.5 | 0.2 / 0.5 / 0.2 | 0.3 / 0.1 / 0.1 | 3e-4 / 1e-4 / 1e-4 | 68.16 / 69.87 / 70.28 |
-| flickr | 0.001 / 0.005 / 0.01 | L4, wd 5e-4, dropout 0.9 | 0.5 / 0.5 / 0.1 | 0.1 / 0.3 / 0.3 | - / - / 1e-4 | 47.16 / 47.03 / 47.16 |
+| flickr | 0.001 / 0.005 / 0.01 | L4, wd 3e-4, dropout 0.9 | 0.5 / 0.5 / 0.5 | 0.3 / 0.3 / 0.1 | - / - / - | 47.44 / 47.18 / 47.24 |
 | reddit | 0.0005 / 0.001 / 0.002 | L2, wd 1e-4, dropout 0.7 | 2 / 2 / 2 | 0.3 / 0.1 / 0.3 | - / - / - | 92.36 / 92.39 / 92.82 |
 
 `-` means stage 1 was selected; stage 2 was not run for Citeseer. The teachers in `teachers/` and the test accuracies were obtained on an RTX PRO 6000 Blackwell Server Edition (RunPod); other GPUs give slightly different numbers.

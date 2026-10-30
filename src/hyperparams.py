@@ -4,7 +4,7 @@ TEACHERS = {
     'cora': dict(layers=4, wd=0.0, dropout=0.9),
     'citeseer': dict(layers=2, wd=5e-4, dropout=0.7),
     'arxiv': dict(layers=4, wd=3e-5, dropout=0.5),
-    'flickr': dict(layers=4, wd=5e-4, dropout=0.9),
+    'flickr': dict(layers=4, wd=3e-4, dropout=0.9),
     'reddit': dict(layers=2, wd=1e-4, dropout=0.7),
 }
 
@@ -18,9 +18,9 @@ BEST = {
     ('arxiv', 0.0005): dict(T=0.2, lam=0.3, penalty=3e-4),
     ('arxiv', 0.0025): dict(T=0.5, lam=0.1, penalty=1e-4),
     ('arxiv', 0.005): dict(T=0.2, lam=0.1, penalty=1e-4),
-    ('flickr', 0.001): dict(T=0.5, lam=0.1, penalty=None),
+    ('flickr', 0.001): dict(T=0.5, lam=0.3, penalty=None),
     ('flickr', 0.005): dict(T=0.5, lam=0.3, penalty=None),
-    ('flickr', 0.01): dict(T=0.1, lam=0.3, penalty=1e-4),
+    ('flickr', 0.01): dict(T=0.5, lam=0.1, penalty=None),
     ('reddit', 0.0005): dict(T=2.0, lam=0.3, penalty=None),
     ('reddit', 0.001): dict(T=2.0, lam=0.1, penalty=None),
     ('reddit', 0.002): dict(T=2.0, lam=0.3, penalty=None),
